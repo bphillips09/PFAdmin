@@ -67,6 +67,19 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private GameObject loginWindow;
     [SerializeField] private InputField titleIDField;
     [SerializeField] private InputField secretKeyField;
+    [Header("Server Select Window")]
+    [SerializeField] private GameObject serverButton;
+    [SerializeField] private GameObject serverView;
+    [SerializeField] private GameObject serverBuildSelection;
+    [Header("Server View Window")]
+    private string lastServerBuildId = "";
+    [SerializeField] private Text serverViewRegion;
+    [SerializeField] private Text serverViewServerIdentifier;
+    [SerializeField] private Text serverViewSessionIdentifier;
+    [SerializeField] private Text serverViewState;
+    [SerializeField] private Text serverViewConnectedPlayers;
+    [SerializeField] private GameObject endSessionModal;
+    [SerializeField] private ServerID serverViewID;
 
     void Start() {
         Application.targetFrameRate = 60;
@@ -87,7 +100,7 @@ public class PlayerController : MonoBehaviour {
         }
 
         if (!PowerShellExists()) {
-            Inform("PowerShell not found!");
+            //Inform("PowerShell not found!");
         }
     }
 
@@ -354,17 +367,110 @@ public class PlayerController : MonoBehaviour {
         });
     }
 
-    public void GetServers() {
-        ShowLoader();
-        PlayFabAdminAPI.ListServerBuilds(new ListBuildsRequest(),
-        result => {
-            Debug.Log ("GOT BUILDS OK: " + result.ToJson().ToString());
-            HideLoader();
-            if (result.Builds.Count > 0) {
-                //
-            } else {
-                Inform ("No servers were found.");
+    public void EnumerateServers(ListMultiplayerServersResponse result) {
+        lastServerBuildId = JsonUtility.FromJson<ListMultiplayerServersRequest>(result.Request.ToJson()).BuildId;
+        
+        Debug.Log ("GOT BUILDS OK: " + result.ToJson().ToString());
+        HideLoader();
+        if (result.MultiplayerServerSummaries.Count > 0) {
+            foreach (var server in result.MultiplayerServerSummaries) {
+                GameObject newServerButton = Instantiate(serverButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             serverButton.transform.parent) as GameObject;
+
+                ServerID identity = newServerButton.GetComponent<ServerID>();
+                
+                identity.Region = (AzureRegion)server.Region;
+                identity.ServerIdentifier = server.ServerId;
+                identity.SessionIdentifier = server.SessionId;
+                identity.State = server.State;
+                identity.connectedPlayers = server.ConnectedPlayers;
+                identity.SetText($"{identity.Region.ToString()}\n<color={StateColor(identity.State)}><b>{identity.State}</b></color>",
+                                    identity.ServerIdentifier, identity.connectedPlayers.Count);
+            
+                newServerButton.SetActive(true);
             }
+
+            serverBuildSelection.SetActive(false);
+            serverView.SetActive(true);
+        } else {
+            Inform ("No servers were found.");
+        }
+    }
+
+    public void ViewServer(ServerID identity) {
+        serverViewRegion.text = "Region: " + identity.Region.ToString();
+        serverViewState.text = "State: " + identity.State;
+        serverViewServerIdentifier.text = "Server: " + identity.ServerIdentifier;
+        serverViewSessionIdentifier.text = "Session: " + identity.SessionIdentifier;
+
+        string players = "";
+        if (identity.connectedPlayers.Count > 0) {
+            foreach (var player in identity.connectedPlayers) {
+                players += player.PlayerId + "\n";
+            }
+        } else {
+            players = "None Yet";
+        }
+        
+        serverViewConnectedPlayers.text = "Players:\n" + players;
+
+        if (identity.endSessionButton) {
+            identity.endSessionButton.interactable = !string.IsNullOrEmpty(identity.SessionIdentifier);
+        }
+
+        serverViewID.Region = identity.Region;
+        serverViewID.SessionIdentifier = identity.SessionIdentifier;
+    }
+
+    public void ConfirmEndServerSession(ServerID identity) {
+        ShowLoader();
+        Debug.Log ("End Session: " + identity.SessionIdentifier + "\nfor build: " + lastServerBuildId);
+        PlayFabMultiplayerAPI.ShutdownMultiplayerServer(new ShutdownMultiplayerServerRequest{
+            Region = identity.Region,
+            BuildId = lastServerBuildId,
+            SessionId = identity.SessionIdentifier
+        },
+        result => {
+            Debug.Log ("SHUTDOWN OK: " + result.ToJson().ToString());
+            Inform ("Server was shutdown successfully.");
+        },
+        error => {
+            Debug.LogError ("SHUTDOWN ERROR: " + error.GenerateErrorReport());
+            Inform ("Unable to shutdown server! " + error.ErrorMessage);
+        });
+    }
+
+    private string StateColor(string state) {
+        string colorString = "";
+        switch (state) {
+            case "Active":
+            colorString = "green";
+            break;
+
+            case "StandingBy":
+            colorString = "yellow";            
+            break;
+
+            default:
+            colorString = "red";            
+            break;
+        }
+        return colorString;
+    }
+
+    public void GetServers(BuildBundleID identity) {
+        ShowLoader();
+        
+        AzureRegion region = GetEnumValue<AzureRegion>(identity.region.options[identity.region.value].text);
+        string buildID = identity.buildName.text;
+
+        PlayFabMultiplayerAPI.ListMultiplayerServers(new ListMultiplayerServersRequest {
+            Region = region,
+            BuildId = buildID
+        },
+        result => {
+            EnumerateServers(result);
         },
         error => {
             Debug.LogError ("ERROR GETTING BUILDS: " + error.GenerateErrorReport());
@@ -450,6 +556,16 @@ public class PlayerController : MonoBehaviour {
             }
         }
         containerWindow.SetActive(false);
+    }
+
+    public void DestroyServerWindow() {
+        for (int i = 0; i < serverButton.transform.parent.childCount; i++) {
+            Transform child = serverButton.transform.parent.GetChild(i);
+            if (child.gameObject.activeSelf) {
+                Destroy(child.gameObject);
+            }
+        }
+        serverView.SetActive(false);
     }
 
     IEnumerator WaitForPSMac(string ps1Location) {
