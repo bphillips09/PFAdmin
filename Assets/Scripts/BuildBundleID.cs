@@ -58,6 +58,9 @@ public class BuildBundleID : MonoBehaviour {
 
     void Update() {
         foreach (var field in allFields) {
+            if (!field) {
+                return;
+            }
             if (string.IsNullOrEmpty(field.text) && field.colors.normalColor != Color.red) {
                 ColorBlock fieldBlock = field.colors;
                 fieldBlock.normalColor = Color.red;

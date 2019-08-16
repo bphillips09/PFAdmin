@@ -80,6 +80,20 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private Text serverViewConnectedPlayers;
     [SerializeField] private GameObject endSessionModal;
     [SerializeField] private ServerID serverViewID;
+    private RegionID editRegionID;
+    [Header("Region ID Window")]
+    [SerializeField] private GameObject regionButton;
+    [SerializeField] private GameObject editRegionWindow;
+    [SerializeField] private Dropdown regionDropdown;
+    [SerializeField] private InputField maxServersField;
+    [SerializeField] private InputField standByServersField;
+    private PortID editPortID;
+    [Header("Port ID Window")]
+    [SerializeField] private GameObject portButton;
+    [SerializeField] private GameObject editPortWindow;
+    [SerializeField] private Dropdown portDropdown;
+    [SerializeField] private InputField portNameField;
+    [SerializeField] private InputField portNumberField;
 
     void Start() {
         Application.targetFrameRate = 60;
@@ -251,6 +265,30 @@ public class PlayerController : MonoBehaviour {
     public void CreateBuildWithCustomContainer(BuildBundleID identity) {
         ShowLoader();
         try {
+            PortID[] configuredPorts = portButton.transform.parent.GetComponentsInChildren<PortID>(false);
+            RegionID[] configuredRegions = regionButton.transform.parent.GetComponentsInChildren<RegionID>(false);
+            
+            if (configuredPorts.Length == 0) {
+                Inform ("Error: Ports cannot be empty! Please add a port.");
+                return;
+            }
+
+            if (configuredRegions.Length == 0) {
+                Inform ("Error: Regions cannot be empty! Please add a region.");
+                return;
+            }
+
+            List<Port> portList = new List<Port>();
+            List<BuildRegionParams> regionList = new List<BuildRegionParams>();
+
+            foreach (var port in configuredPorts) {
+                portList.Add(port.portIDParams);
+            }
+
+            foreach (var region in configuredRegions) {
+                regionList.Add(region.regionIDParams);
+            }
+
             PlayFabMultiplayerAPI.CreateBuildWithCustomContainer(new CreateBuildWithCustomContainerRequest{
                 BuildName = identity.buildName.text,
                 ContainerFlavor = GetEnumValue<ContainerFlavor>(identity.containerFlavor.options[identity.containerFlavor.value].text),
@@ -260,23 +298,11 @@ public class PlayerController : MonoBehaviour {
                 },
                 ContainerRunCommand = "echo \"Server is being allocated...\" >> /data/GameLogs/Server.log",
                 MultiplayerServerCountPerVm = int.Parse(identity.serverCountPerVm.text),
-                Ports = new List<Port> {
-                    new Port {
-                        Name = "game", 
-                        Num = int.Parse(identity.portNumber.text), 
-                        Protocol = GetEnumValue<ProtocolType>(
-                            identity.portProtocol.options[identity.portProtocol.value].text
-                        )
-                    }
-                },
-                RegionConfigurations = new List<BuildRegionParams> {
-                    new BuildRegionParams{
-                        Region = GetEnumValue<AzureRegion>(identity.region.options[identity.region.value].text), 
-                        MaxServers = int.Parse(identity.maxServers.text), 
-                        StandbyServers = int.Parse(identity.standByServers.text)
-                    }
-                },
-                VmSize = GetEnumValue<AzureVmSize>(identity.vmSize.options[identity.vmSize.value].text)
+                VmSize = GetEnumValue<AzureVmSize>(identity.vmSize.options[identity.vmSize.value].text),
+
+
+                Ports = portList,
+                RegionConfigurations = regionList
             }, 
             result => {
                 Debug.Log ("CREATE BUILD OK: " + result.ToJson());
@@ -290,6 +316,85 @@ public class PlayerController : MonoBehaviour {
             });
         } catch (System.Exception e) {
             Inform (e.Message);
+        }
+    }
+
+    public void AddRegion() {
+        GameObject newRegionButton = Instantiate(regionButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             regionButton.transform.parent) as GameObject;
+
+        RegionID identity = newRegionButton.GetComponent<RegionID>();
+        identity.UpdateRegion(AzureRegion.EastUs, 4, 4);
+        EditRegion(identity);
+        newRegionButton.SetActive(true);
+    }   
+
+    public void AddPort() {
+        GameObject newPortButton = Instantiate(portButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             portButton.transform.parent) as GameObject;
+
+        PortID identity = newPortButton.GetComponent<PortID>();
+        identity.UpdatePort("game", 8080, ProtocolType.TCP);
+        EditPort(identity);
+        newPortButton.SetActive(true);
+    }   
+
+    public void DeleteRegion(RegionID identifier) {
+        Destroy(identifier.gameObject);
+    }
+
+    public void DeletePort(PortID identifier) {
+        Destroy(identifier.gameObject);
+    }
+
+    public void EditRegion(RegionID identifier) {
+        editRegionID = identifier;
+        for (int i = 0; i < regionDropdown.options.Count; i++) {
+            if (regionDropdown.options[i].text.Equals(identifier.region.ToString())) {
+                regionDropdown.value = i;
+                regionDropdown.RefreshShownValue();
+            }
+        }
+        maxServersField.text = identifier.maxServers.ToString();
+        standByServersField.text = identifier.standByServers.ToString();
+        editRegionWindow.SetActive(true);
+    }
+
+    public void EditPort(PortID identifier) {
+        editPortID = identifier;
+        for (int i = 0; i < portDropdown.options.Count; i++) {
+            if (portDropdown.options[i].text.Equals(identifier.protocol.ToString())) {
+                portDropdown.value = i;
+                portDropdown.RefreshShownValue();
+            }
+        }
+
+        portNameField.text = identifier.portName.ToString();
+        portNumberField.text = identifier.number.ToString();
+        editPortWindow.SetActive(true);
+    }
+
+    public void SaveRegion(BuildBundleID identity) {
+        AzureRegion newRegion = GetEnumValue<AzureRegion>(identity.region.options[identity.region.value].text);
+        
+        try {
+            editRegionID.UpdateRegion(newRegion, int.Parse(maxServersField.text), int.Parse(standByServersField.text));
+            editRegionWindow.SetActive(false);
+        } catch (System.Exception e) {
+            Inform ("Error: " + e.Message);
+        }
+    }
+
+    public void SavePort(BuildBundleID identity) {
+        ProtocolType newPortType = GetEnumValue<ProtocolType>(identity.portProtocol.options[identity.portProtocol.value].text);
+        
+        try {
+            editPortID.UpdatePort(portNameField.text, int.Parse(portNumberField.text), newPortType);
+            editPortWindow.SetActive(false);
+        } catch (System.Exception e) {
+            Inform ("Error: " + e.Message);
         }
     }
 
