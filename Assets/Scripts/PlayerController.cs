@@ -9,11 +9,14 @@ using PlayFab.AuthenticationModels;
 using System.IO;
 using System.Diagnostics;
 using Debug = UnityEngine.Debug;
+using SFB;
+using UnityEngine.Networking;
 
 public class PlayerController : MonoBehaviour {
     [SerializeField] private Button createContainerButton;
     [SerializeField] private BuildBundleID buildID;
     [SerializeField] private GameObject loader;
+    [SerializeField] private Text loaderMessage;
     [SerializeField] private GameObject segmentButton;
     [SerializeField] private GameObject playerButton;
     [SerializeField] private GameObject containerButton;
@@ -97,6 +100,52 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private Dropdown portDropdown;
     [SerializeField] private InputField portNameField;
     [SerializeField] private InputField portNumberField;
+    private PolicyID editPolicyID;
+    [Header("Policy ID Window")]
+    [SerializeField] private GameObject policyButton;
+    [SerializeField] private GameObject policyWindow;
+    [SerializeField] private GameObject editPolicyWindow;
+    [SerializeField] private Dropdown actionDropdown;
+    [SerializeField] private Dropdown effectDropdown;
+    [SerializeField] private InputField commentField;
+    [SerializeField] private InputField resourceField;
+    [SerializeField] private InputField principalField;
+    [Header("Asset Upload Window")]
+    [SerializeField] private GameObject assetButton;
+    [SerializeField] private GameObject assetView;
+    [SerializeField] private GameObject uploadConfirmationWindow;
+    [SerializeField] private Text uploadConfirmationMessageText;
+    private string lastFilePath;
+
+    void Awake() {
+        var args = System.Environment.GetCommandLineArgs();
+
+        if (!args[0].Contains("-batchmode")) {
+            return;
+        }
+
+        for (int i = 0; i < args.Length; i++) {
+            Debug.Log (args[i]);
+            //if (args[i].Equals("-gameMode") && args.Length >= i + 1) {
+            //    Debug.Log ("Setup Custom Mode");
+            //    GameMode = args[i + 1];
+            //} else if (args[i].Equals("-debug")) {
+            //    Debug.Log ("\n****\nDEBUG MODE\n****\n");
+            //    serverDebugMode = true;
+            //} else if (args[i].Equals("-freezeAI")) {
+            //    Debug.Log ("\n****\nFREEZE AI\n****\n");
+            //    scoreController.debugAI = true;
+            //} else if (args[i].Equals("-sequence") && args.Length >= i + 1) {
+            //    Debug.Log ("Setup Custom Sequence");
+            //    Sequence = args[i + 1];
+            //} else 
+            if (args[i].Equals("-createcontainer")) {
+                //GetContainerCredentialsWithToken();
+
+                //((IgnoranceTransport)this.transport).m_ServerUPNPEnabled = true;
+            }
+        }
+    }
 
     void Start() {
         Application.targetFrameRate = 60;
@@ -118,12 +167,32 @@ public class PlayerController : MonoBehaviour {
             Authenticate();
         }
 
+        if (actionDropdown) {
+            string[] actions = System.Enum.GetNames (typeof(PolicyAction));
+            for(int i = 0; i < actions.Length; i++){
+                actionDropdown.options.Add (new Dropdown.OptionData () { text = actions [i] });
+            }
+        }
+
+        if (effectDropdown) {
+            string[] effects = System.Enum.GetNames (typeof(EffectType));
+            for(int i = 0; i < effects.Length; i++){
+                effectDropdown.options.Add (new Dropdown.OptionData () { text = effects [i] });
+            }
+        }
+
         if (!PowerShellExists()) {
             //Inform("PowerShell not found!");
         }
     }
 
     void ShowLoader() {
+        loaderMessage.text = "Loading...";
+        loader.SetActive(true);
+    }
+
+    void ShowLoader(string message) {
+        loaderMessage.text = message;
         loader.SetActive(true);
     }
 
@@ -206,6 +275,109 @@ public class PlayerController : MonoBehaviour {
             Inform("GET TOKEN FAILED: " + error.ErrorMessage);
             Debug.LogError("GET TOKEN FAILED: " + error.ToString());
         });
+    }
+
+    public void UploadAsset() {
+        ShowLoader("Waiting for file...");
+        string desktopDir = System.Environment.GetFolderPath(System.Environment.SpecialFolder.Desktop);
+        StandaloneFileBrowser.OpenFilePanelAsync("Open File", desktopDir, "zip", false, (string[] paths) => {
+           if (paths.Length > 0 && !string.IsNullOrEmpty(paths[0])) {
+                lastFilePath = paths[0];
+                ShowUploadConfirmation(Path.GetFileName(lastFilePath));
+                HideLoader();
+            } else {
+                HideLoader();
+            } 
+        });
+    }
+
+    public void ShowAssets() {
+        ShowLoader("Loading Assets...");
+        PlayFabMultiplayerAPI.ListAssetSummaries(new ListAssetSummariesRequest{
+            PageSize = 50
+        },
+        result => {
+            HideLoader();
+            foreach (var asset in result.AssetSummaries) {
+                GameObject newAssetButton = Instantiate(assetButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             assetButton.transform.parent) as GameObject;
+
+                AssetID identity = newAssetButton.GetComponent<AssetID>();
+                
+                identity.fileName = asset.FileName;
+                identity.metaData = asset.Metadata;
+                identity.SetText($"{identity.fileName}");
+            
+                newAssetButton.SetActive(true);
+            }
+            assetView.SetActive(true);
+        },
+        error => {
+            Debug.LogError ("AssetSummaries Error: " + error.GenerateErrorReport());
+        });
+    }
+
+    public void DeleteAsset(AssetID identity) {
+        ShowLoader ("Deleting Asset...");
+        PlayFabMultiplayerAPI.DeleteAsset(new DeleteAssetRequest{
+            FileName = identity.fileName
+        },
+        result => {
+            HideLoader();
+            Destroy (identity.gameObject);
+        },
+        error => {
+            Debug.LogError ("Delete Error: " + error.GenerateErrorReport());
+            Inform ("Error: " + error.ErrorMessage);
+        });
+    }
+
+    void ShowUploadConfirmation(string fileName) {
+        uploadConfirmationMessageText.text = $"Are you sure you want to upload {fileName}?";
+        uploadConfirmationWindow.SetActive(true);
+    }
+
+    public void ConfirmUpload() {
+        ShowLoader("Getting Upload URL...");
+        string fileName = Path.GetFileName(lastFilePath);
+        PlayFabMultiplayerAPI.GetAssetUploadUrl(new GetAssetUploadUrlRequest{
+            FileName = fileName
+        },
+        result => {
+            Debug.Log ("Got Upload URL: " + result.AssetUploadUrl);
+            ShowLoader("Reading File...");
+            StartCoroutine(UploadFile(result.AssetUploadUrl));
+        },
+        error => {
+            Debug.LogError("UploadURL Error: " + error.GenerateErrorReport());
+            Inform ("Error: " + error.ErrorMessage);
+        });
+    }
+
+    IEnumerator UploadFile(string url) {
+        byte[] fileAsBytes = File.ReadAllBytes(lastFilePath);
+        Debug.Log ("Beginning Upload...");
+        ShowLoader("Uploading...");
+
+        using (UnityWebRequest www = UnityWebRequest.Put(url, fileAsBytes)) {
+            www.uploadHandler.contentType = "application/zip";
+            www.SetRequestHeader("x-ms-blob-type", "BlockBlob");
+
+            UnityWebRequestAsyncOperation operation = www.SendWebRequest();
+    
+            while (!www.isDone) {
+                ShowLoader(string.Format("Uploading... {0}%", (www.uploadProgress * 100f).ToString("F1")));
+                yield return null;
+            }
+
+            if(www.isNetworkError || www.isHttpError) {
+                Debug.LogError(www.error);
+                Inform ("Upload Error:\n\n" + www.error);
+            } else {
+                Inform ("Upload Complete!");
+            }
+        }
     }
 
     public void ListContainerImages() {
@@ -454,6 +626,197 @@ public class PlayerController : MonoBehaviour {
         });
     }
 
+    public void GetAPIPolicy() {
+        ShowLoader();
+        PlayFabAdminAPI.GetPolicy(new GetPolicyRequest{
+            PolicyName = "ApiPolicy"
+        },
+        result => {
+            HideLoader();
+            Debug.Log ("Got Policy OK: " + result.ToJson());
+            foreach (var policy in result.Statements) {
+                GameObject newPolicyButton = Instantiate(policyButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             policyButton.transform.parent) as GameObject;
+
+                PolicyID identity = newPolicyButton.GetComponent<PolicyID>();
+                identity.SetPolicy(policy.Action, policy.ApiConditions,
+                policy.Comment, policy.Effect, policy.Principal, policy.Resource);
+                //EditPolicy(identity);
+                newPolicyButton.SetActive(true);
+            }
+            if (result.Statements.Count > 0) {
+                policyWindow.SetActive(true);
+            }
+        },
+        error => {
+            Debug.LogError ("Error Getting Policy: " + error.GenerateErrorReport());
+            Inform ("Error Getting Policy!\n\n" + error.ErrorMessage);
+        });
+    }
+
+    public void DeletePolicy() {
+        if (editPolicyID) {
+            Destroy (editPolicyID.gameObject);
+            editPolicyWindow.SetActive(false);
+        }
+    }
+
+    public void AddPolicy() {
+        GameObject newPolicyButton = Instantiate(policyButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             policyButton.transform.parent) as GameObject;
+
+        PolicyID identity = newPolicyButton.GetComponent<PolicyID>();
+        identity.SetPolicy("*", null, "", EffectType.Deny, "*", "pfrn:api--*");
+        EditPolicy(identity);
+        newPolicyButton.SetActive(true);
+    }  
+
+    public void SavePolicy(PolicyID identity) {
+        PolicyAction newActionType = GetEnumValue<PolicyAction>(actionDropdown.options[actionDropdown.value].text);
+        EffectType newEffectType = GetEnumValue<EffectType>(effectDropdown.options[effectDropdown.value].text);
+        
+        try {
+            editPolicyID.SetPolicy(GetPolicyActionString(newActionType), null,
+                commentField.text, newEffectType, principalField.text, resourceField.text);
+
+            editPolicyWindow.SetActive(false);
+        } catch (System.Exception e) {
+            Inform ("Error: " + e.Message);
+        }
+    }
+
+    public void MovePolicyUp(PolicyID identity) {
+        Transform transformIdentity = identity.transform;
+        int index = transformIdentity.GetSiblingIndex();
+        int childCount = transformIdentity.parent.childCount;
+        if (index != 1) {
+            transformIdentity.SetSiblingIndex(index-1);
+            index = transformIdentity.GetSiblingIndex();
+        }
+        identity.downButton.interactable = !(index == childCount-1);
+        identity.upButton.interactable = !(index == 1);
+    }
+
+    public void MovePolicyDown(PolicyID identity) {
+        Transform transformIdentity = identity.transform;
+        int index = transformIdentity.GetSiblingIndex();
+        int childCount = transformIdentity.parent.childCount;
+        if (index != childCount-1) {
+            transformIdentity.SetSiblingIndex(index+1);
+            index = transformIdentity.GetSiblingIndex();
+        }
+        identity.downButton.interactable = !(index == childCount-1);
+        identity.upButton.interactable = !(index == 1);
+    }
+
+    public void FinishEditingPolicies() {
+        ShowLoader();
+
+        List<PermissionStatement> policyList = new List<PermissionStatement>();
+        Transform policyParent = policyButton.transform.parent;
+        for (int i = 0; i < policyParent.childCount; i++) {
+            if (policyParent.GetChild(i).gameObject.activeSelf) {
+                PolicyID policyIdentity = policyParent.GetChild(i).GetComponent<PolicyID>();
+                policyList.Add(policyIdentity.GetPermissionStatement());
+            }
+        }
+
+        PlayFabAdminAPI.UpdatePolicy(new UpdatePolicyRequest{
+            OverwritePolicy = true,
+            PolicyName = "ApiPolicy",
+            Statements = policyList
+        },
+        result => {
+            Debug.Log ("Updated Policy OK: " + result.ToJson());
+            HideLoader();
+            DestroyPolicyWindow();
+            Inform ("Successfully Updated API Policies!");
+        },
+        error => {
+            Debug.LogError("Error: " + error.GenerateErrorReport());
+            Inform ("ERROR: " + error.ErrorMessage);
+        });
+
+    }
+
+    public static string GetPolicyActionString(PolicyAction policy) {
+        string action = "*";
+        switch (policy) {
+            case PolicyAction.ALL:
+            action = "*";
+            break;
+            case PolicyAction.Read:
+            action = "Read";
+            break;
+            case PolicyAction.Write:
+            action = "Write";
+            break;
+            case PolicyAction.Accept:
+            action = "Accept";
+            break;
+            case PolicyAction.POST:
+            action = "POST";
+            break;
+            case PolicyAction.GET:
+            action = "GET";
+            break;
+            default:
+            action = "*";
+            break;
+        }
+        return action;
+    }
+
+    public static PolicyAction GetPolicyAction(string policy) {
+        PolicyAction action = PolicyAction.ALL;
+        switch (policy) {
+            case "*":
+            action = PolicyAction.ALL;
+            break;
+            case "Read":
+            action = PolicyAction.Read;
+            break;
+            case "Write":
+            action = PolicyAction.Write;
+            break;
+            case "Accept":
+            action = PolicyAction.Accept;
+            break;
+            case "POST":
+            action = PolicyAction.POST;
+            break;
+            case "GET":
+            action = PolicyAction.GET;
+            break;
+            default:
+            action = PolicyAction.ALL;
+            break;
+        }
+        return action;
+    }
+
+    public void EditPolicy(PolicyID identity) {
+        editPolicyID = identity;
+        for (int i = 0; i < effectDropdown.options.Count; i++) {
+            if (effectDropdown.options[i].text.Equals(identity.Effect.ToString())) {
+                effectDropdown.value = i;
+                effectDropdown.RefreshShownValue();
+            }
+        }
+        for (int i = 0; i < actionDropdown.options.Count; i++) {
+            if (actionDropdown.options[i].text.Equals(identity.Action.ToString())) {
+                actionDropdown.value = i;
+                actionDropdown.RefreshShownValue();
+            }
+        }
+
+        resourceField.text = identity.Resource;
+        commentField.text = identity.Comment;
+        principalField.text = identity.Principal;
+        editPolicyWindow.SetActive(true);
+    }
 
     public void GetSegments() {
         ShowLoader();
@@ -688,6 +1051,16 @@ public class PlayerController : MonoBehaviour {
         segmentWindow.SetActive(false);
     }
 
+    public void DestroyPolicyWindow() {
+        for (int i = 0; i < policyButton.transform.parent.childCount; i++) {
+            Transform child = policyButton.transform.parent.GetChild(i);
+            if (child.gameObject.activeSelf) {
+                Destroy(child.gameObject);
+            }
+        }
+        policyWindow.SetActive(false);
+    }
+
     public void DestroyPlayerWindow() {
         for (int i = 0; i < playerButton.transform.parent.childCount; i++) {
             Transform child = playerButton.transform.parent.GetChild(i);
@@ -726,6 +1099,16 @@ public class PlayerController : MonoBehaviour {
             }
         }
         buildView.SetActive(false);
+    }
+
+    public void DestroyAssetWindow() {
+        for (int i = 0; i < assetButton.transform.parent.childCount; i++) {
+            Transform child = assetButton.transform.parent.GetChild(i);
+            if (child.gameObject.activeSelf) {
+                Destroy(child.gameObject);
+            }
+        }
+        assetView.SetActive(false);
     }
 
     IEnumerator WaitForPSMac(string ps1Location) {
@@ -839,7 +1222,7 @@ public class PlayerController : MonoBehaviour {
             if (!string.IsNullOrEmpty(banTimeInHours.text)) {
                 request.DurationInHours = uint.Parse(banTimeInHours.text);
             }
-        } catch (System.Exception e) {
+        } catch (System.Exception) {
             request.DurationInHours = 0;
         }
         request.Reason = banReason.text;
