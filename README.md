@@ -6,7 +6,7 @@ Admin API GUI application for PlayFab (currently for Unity-based servers only)
 - Follow the ReadMe in the release zip
 
 # Dependencies
-- [Docker](https://www.docker.com/products/docker-desktop) and [PowerShell](https://github.com/PowerShell/PowerShell/releases/tag/v6.2.1)
+- [Docker](https://www.docker.com/products/docker-desktop) and [PowerShell](https://github.com/PowerShell/PowerShell/releases/latest)
 
 # FAQ
 What is it?
