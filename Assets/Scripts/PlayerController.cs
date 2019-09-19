@@ -126,23 +126,8 @@ public class PlayerController : MonoBehaviour {
 
         for (int i = 0; i < args.Length; i++) {
             Debug.Log (args[i]);
-            //if (args[i].Equals("-gameMode") && args.Length >= i + 1) {
-            //    Debug.Log ("Setup Custom Mode");
-            //    GameMode = args[i + 1];
-            //} else if (args[i].Equals("-debug")) {
-            //    Debug.Log ("\n****\nDEBUG MODE\n****\n");
-            //    serverDebugMode = true;
-            //} else if (args[i].Equals("-freezeAI")) {
-            //    Debug.Log ("\n****\nFREEZE AI\n****\n");
-            //    scoreController.debugAI = true;
-            //} else if (args[i].Equals("-sequence") && args.Length >= i + 1) {
-            //    Debug.Log ("Setup Custom Sequence");
-            //    Sequence = args[i + 1];
-            //} else 
             if (args[i].Equals("-createcontainer")) {
-                //GetContainerCredentialsWithToken();
-
-                //((IgnoranceTransport)this.transport).m_ServerUPNPEnabled = true;
+                GetContainerCredentialsWithToken();
             }
         }
     }
