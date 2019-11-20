@@ -1,7 +1,7 @@
 # PFAdmin
-Admin API GUI application for PlayFab (currently for Unity-based servers only)
+Admin API GUI application for PlayFab
 
-<img src="https://i.imgur.com/NzKHvml.png" alt="main" width="200"/> <img src="https://i.imgur.com/uUPctYA.png" alt="server" width="200"/> <img src="https://i.imgur.com/p0vcGy0.png" alt="server" width="200"/>
+<img src="https://i.imgur.com/NzKHvml.png" alt="main" width="200"/> <img src="https://i.imgur.com/uUPctYA.png" alt="server" width="200"/> <img src="https://i.imgur.com/fjUg3m6.png" alt="server" width="200"/>
 
 # How To
 - Download a [release](https://github.com/bphillips09/PFAdmin/releases/latest)
