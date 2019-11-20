@@ -26,6 +26,8 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private GameObject playerInfoWindow; 
     [SerializeField] private GameObject deleteSelectedButton;
     [SerializeField] private GameObject informModal;
+    [SerializeField] private GameObject informExecutableModal;
+    [SerializeField] private Text informExecutableText;
     [SerializeField] private GameObject informTagsModal;
     [SerializeField] private Button informButton;
     [SerializeField] private GameObject informOkButton;
@@ -77,6 +79,8 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private GameObject serverButton;
     [SerializeField] private GameObject serverView;
     [SerializeField] private GameObject serverBuildSelection;
+    [SerializeField] private Dropdown serverTagsDropdown;
+    [SerializeField] private InputField serverStartCommandField;
     [Header("Server View Window")]
     private string lastServerBuildId = "";
     [SerializeField] private Text serverViewRegion;
@@ -115,6 +119,11 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private GameObject assetView;
     [SerializeField] private GameObject uploadConfirmationWindow;
     [SerializeField] private Text uploadConfirmationMessageText;
+    [SerializeField] private GameObject buildAssetButton;
+    [SerializeField] private GameObject editAssetWindow;
+    [SerializeField] private Text editAssetWindowTitle;
+    [SerializeField] private InputField assetMountPathField;
+    private AssetID editAssetID;
     private string lastFilePath;
 
     void Awake() {
@@ -127,7 +136,7 @@ public class PlayerController : MonoBehaviour {
         for (int i = 0; i < args.Length; i++) {
             Debug.Log (args[i]);
             if (args[i].Equals("-createcontainer")) {
-                GetContainerCredentialsWithToken();
+                //GetContainerCredentialsWithToken();
             }
         }
     }
@@ -241,7 +250,12 @@ public class PlayerController : MonoBehaviour {
     public void Logout() {
         PlayFabSettings.TitleId = "";
         PlayFabSettings.DeveloperSecretKey = "";
+        PlayFabClientAPI.ForgetAllCredentials();
         PlayerPrefs.DeleteAll();
+        Application.Quit();
+    }
+
+    public void Exit() {
         Application.Quit();
     }
 
@@ -276,7 +290,7 @@ public class PlayerController : MonoBehaviour {
         });
     }
 
-    public void ShowAssets() {
+    public void ShowAssets(bool selection) {
         ShowLoader("Loading Assets...");
         PlayFabMultiplayerAPI.ListAssetSummaries(new ListAssetSummariesRequest{
             PageSize = 50
@@ -293,6 +307,7 @@ public class PlayerController : MonoBehaviour {
                 identity.fileName = asset.FileName;
                 identity.metaData = asset.Metadata;
                 identity.SetText($"{identity.fileName}");
+                identity.SetSelectable(selection);
             
                 newAssetButton.SetActive(true);
             }
@@ -396,16 +411,10 @@ public class PlayerController : MonoBehaviour {
             ImageName = identity.containerName
         },
         result => {
-            HideLoader();
-            string tags = "";
-            foreach (var tag in result.Tags) {
-                tags += "\n" + tag;
-                if (tag.Equals("latest")) {
-                    identity.containerTag = tag;
-                }
-            }
-            InformTags(string.Format("Tags for '<b>{0}</b>':\n{1}", identity.containerName, tags), identity);
             Debug.Log ("GOT TAGS OK: " + result.ToJson());
+            HideLoader();
+            identity.EnumerateTags(result.Tags);
+            InformContainer(string.Format("Select Tag for '<b>{0}</b>'", identity.containerName), identity);
         },
         error => {
             HideLoader();
@@ -424,11 +433,23 @@ public class PlayerController : MonoBehaviour {
         }   
     }   
 
+    public void IgnoreExectuableAsset(BuildBundleID identity) {
+        identity.overrideChmod = true;
+        CreateBuildWithCustomContainer(identity);
+    }
+
+    public void FixExecutableAsset(BuildBundleID identity) {
+        string startCommand = serverStartCommandField.text;
+        serverStartCommandField.text = $"chmod +x {startCommand};{startCommand}";
+        CreateBuildWithCustomContainer(identity);
+    }
+
     public void CreateBuildWithCustomContainer(BuildBundleID identity) {
         ShowLoader();
         try {
             PortID[] configuredPorts = portButton.transform.parent.GetComponentsInChildren<PortID>(false);
             RegionID[] configuredRegions = regionButton.transform.parent.GetComponentsInChildren<RegionID>(false);
+            AssetID[] configuredAssets = buildAssetButton.transform.parent.GetComponentsInChildren<AssetID>(false);
             
             if (configuredPorts.Length == 0) {
                 Inform ("Error: Ports cannot be empty! Please add a port.");
@@ -440,8 +461,19 @@ public class PlayerController : MonoBehaviour {
                 return;
             }
 
+            if (configuredAssets.Length == 0) {
+                Inform ("Error: Assets cannot be empty! Please add an asset.");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(serverStartCommandField.text)) {
+                Inform ("Error: Start Game Command cannot be empty! Please add a command. (Example: /data/Assets/GameServer.x86_64");
+                return;
+            }
+
             List<Port> portList = new List<Port>();
             List<BuildRegionParams> regionList = new List<BuildRegionParams>();
+            List<AssetReferenceParams> assetList = new List<AssetReferenceParams>();
 
             foreach (var port in configuredPorts) {
                 portList.Add(port.portIDParams);
@@ -451,6 +483,18 @@ public class PlayerController : MonoBehaviour {
                 regionList.Add(region.regionIDParams);
             }
 
+            foreach (var asset in configuredAssets) {
+                assetList.Add(new AssetReferenceParams{ 
+                    FileName = asset.fileName,
+                    MountPath = asset.mountPath
+                });
+            }
+
+            if (!serverStartCommandField.text.Contains("chmod") && !identity.overrideChmod) {
+                InformExecutable("Your server asset is not marked as executable!");
+                return;
+            }
+
             PlayFabMultiplayerAPI.CreateBuildWithCustomContainer(new CreateBuildWithCustomContainerRequest{
                 BuildName = identity.buildName.text,
                 ContainerFlavor = GetEnumValue<ContainerFlavor>(identity.containerFlavor.options[identity.containerFlavor.value].text),
@@ -458,11 +502,10 @@ public class PlayerController : MonoBehaviour {
                     ImageName = identity.containerName.text,
                     Tag = identity.containerTag.text
                 },
-                ContainerRunCommand = "echo \"Server is being allocated...\" >> /data/GameLogs/Server.log",
+                ContainerRunCommand = serverStartCommandField.text,
                 MultiplayerServerCountPerVm = int.Parse(identity.serverCountPerVm.text),
                 VmSize = GetEnumValue<AzureVmSize>(identity.vmSize.options[identity.vmSize.value].text),
-
-
+                GameAssetReferences = assetList,
                 Ports = portList,
                 RegionConfigurations = regionList
             }, 
@@ -478,6 +521,48 @@ public class PlayerController : MonoBehaviour {
             });
         } catch (System.Exception e) {
             Inform (e.Message);
+        }
+    }
+
+    public void AddAsset() {
+        ShowAssets(true);
+    }
+
+    public void OnSelectAsset(AssetID identity) {
+        DestroyAssetWindow();
+        GameObject newAssetButton = Instantiate(buildAssetButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             buildAssetButton.transform.parent) as GameObject;
+
+        AssetID newAsset = newAssetButton.GetComponent<AssetID>();
+        newAsset.fileName = identity.fileName;
+        newAsset.mountPath = identity.mountPath;
+        identity.SetText($"{identity.fileName}");
+        EditAsset(newAsset);
+        newAssetButton.SetActive(true);
+    }
+
+    public void DeleteAssetFromBuild(AssetID identity) {
+        Destroy(identity.gameObject);
+    }
+
+    public void EditAsset(AssetID identity) {
+        editAssetID = identity;
+        editAssetWindowTitle.text = identity.fileName;
+        if (string.IsNullOrEmpty(identity.mountPath)) {
+            identity.mountPath = "/data/Assets/";
+        }
+        assetMountPathField.text = identity.mountPath;
+        editAssetWindow.SetActive(true);
+    }
+
+    public void SaveAssetConfirmation() {
+        try {
+            editAssetID.mountPath = assetMountPathField.text;
+            editAssetID.SetText(editAssetID.fileName);
+            editAssetWindow.SetActive(false);
+        } catch (System.Exception e) {
+            Inform ("Error: " + e.Message);
         }
     }
 
@@ -1361,17 +1446,16 @@ public class PlayerController : MonoBehaviour {
         }
     }
 
-    public void InformTags(string message, ContainerID identity) {
+    public void InformContainer(string message, ContainerID identity) {
         HideLoader();
         informTagsText.text = message;
         informTagsModal.GetComponent<ContainerID>().containerName = identity.containerName;
-        informTagsModal.GetComponent<ContainerID>().containerTag = identity.containerTag;
         informTagsModal.SetActive(true);
     }
 
     public void CreateNewBuild(ContainerID identity) {
         string containerName = identity.containerName;
-        string containerTag = identity.containerTag;
+        string containerTag = identity.tagsList.options[identity.tagsList.value].text;
         buildID.containerName.text = containerName;
         buildID.containerTag.text = containerTag;
         buildID.gameObject.SetActive(true);
@@ -1390,6 +1474,12 @@ public class PlayerController : MonoBehaviour {
         informUrlButton.SetActive(true);
         informOkButton.SetActive(false);
         informModal.SetActive(true);
+    }
+
+    public void InformExecutable(string message) {
+        HideLoader();
+        informExecutableText.text = message;
+        informExecutableModal.SetActive(true);
     }
 
     public void Inform(string message) {

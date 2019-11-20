@@ -17,6 +17,7 @@ public class BuildBundleID : MonoBehaviour {
     public InputField portNumber;
     public Dropdown portProtocol;
     public InputField[] allFields;
+    [HideInInspector] public bool overrideChmod = false;
 
     void Start() {
         if (containerFlavor) {
