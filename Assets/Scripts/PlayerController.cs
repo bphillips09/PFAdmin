@@ -73,6 +73,7 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private InputField titleIDField;
     [SerializeField] private InputField secretKeyField;
     [Header("Build Select Window")]
+    [SerializeField] private Text buildTitle;
     [SerializeField] private GameObject buildButton;
     [SerializeField] private GameObject buildView;
     [Header("Server Select Window")]
@@ -81,6 +82,7 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private GameObject serverBuildSelection;
     [SerializeField] private Dropdown serverTagsDropdown;
     [SerializeField] private InputField serverStartCommandField;
+    [SerializeField] private InputField serverLogCommandField;
     [Header("Server View Window")]
     private string lastServerBuildId = "";
     [SerializeField] private Text serverViewRegion;
@@ -440,7 +442,10 @@ public class PlayerController : MonoBehaviour {
 
     public void FixExecutableAsset(BuildBundleID identity) {
         string startCommand = serverStartCommandField.text;
-        serverStartCommandField.text = $"chmod +x {startCommand};{startCommand}";
+        string logCommand = serverLogCommandField.text;
+        serverStartCommandField.text = $"chmod +x {startCommand};{startCommand}" + 
+            (string.IsNullOrEmpty(logCommand) ? "" : $" {logCommand}");
+
         CreateBuildWithCustomContainer(identity);
     }
 
@@ -1456,6 +1461,7 @@ public class PlayerController : MonoBehaviour {
     public void CreateNewBuild(ContainerID identity) {
         string containerName = identity.containerName;
         string containerTag = identity.tagsList.options[identity.tagsList.value].text;
+        buildTitle.text = "Build Image: " + containerName;
         buildID.containerName.text = containerName;
         buildID.containerTag.text = containerTag;
         buildID.gameObject.SetActive(true);
