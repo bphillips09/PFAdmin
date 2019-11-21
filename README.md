@@ -1,11 +1,31 @@
 # PFAdmin
-Admin API GUI application for PlayFab (currently for Unity-based servers only)
+Admin API GUI application for PlayFab
 
-<img src="https://i.imgur.com/NzKHvml.png" alt="main" width="200"/> <img src="https://i.imgur.com/uUPctYA.png" alt="server" width="200"/> <img src="https://i.imgur.com/p0vcGy0.png" alt="server" width="200"/>
+<img src="https://i.imgur.com/NzKHvml.png" alt="main" width="200"/> <img src="https://i.imgur.com/uUPctYA.png" alt="server" width="200"/> <img src="https://i.imgur.com/fjUg3m6.png" alt="server" width="200"/>
 
-# How To
+# How To Use
 - Download a [release](https://github.com/bphillips09/PFAdmin/releases/latest)
-- Follow the ReadMe in the release zip
+- Ensure you have Docker Desktop and PowerShell installed
+- Ensure Docker is running
+- Run PFAdmin, sign in with your TitleID and the new key you created in the Game Manager
+- Select "Create Container"
+- In the new window that opened, enter a server image name (something like "server_base_image" etc)
+- Enter your TCP or UDP port (for example: 7777)
+- Once the program builds and uploads the container, return to PFAdmin
+- Select "Create Server Build"
+- Set up your server like you would in the Game Manager
+- Add your server Asset to the "Assets" field, make sure you set the mount point (or leave it at the default '/data/Assets/')
+- Set your start game command (for example: /data/Assets/GameServer.x86_64)
+- Select "Create Build"
+
+- The next time you want to update your server, you can just reuse the same base image. 
+
+# How To Update Your Game Server
+- Run PFAdmin
+- Upload your new server asset
+- Select "Create Server Build", and select your new asset
+- Change the "Start Game Command" to reflect your new asset name
+- Create the build
 
 # Dependencies
 - [Docker](https://www.docker.com/products/docker-desktop) and [PowerShell](https://github.com/PowerShell/PowerShell/releases/latest)
