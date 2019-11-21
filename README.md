@@ -1,5 +1,5 @@
 # PFAdmin
-Admin API GUI application for PlayFab
+Admin API GUI application for PlayFab (Now with Unreal support!)
 
 <img src="https://i.imgur.com/NzKHvml.png" alt="main" width="200"/> <img src="https://i.imgur.com/uUPctYA.png" alt="server" width="200"/> <img src="https://i.imgur.com/fjUg3m6.png" alt="server" width="200"/>
 
