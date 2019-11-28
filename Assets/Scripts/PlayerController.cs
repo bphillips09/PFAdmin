@@ -1,4 +1,12 @@
-﻿using System.Collections;
+﻿using Microsoft.WindowsAzure.Storage;
+using Microsoft.WindowsAzure.Storage.Auth;
+using Microsoft.WindowsAzure.Storage.Blob;
+using Microsoft.WindowsAzure.Storage.Core.Util;
+using System.Threading.Tasks;
+using System.Threading;
+using System;
+
+using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
@@ -348,8 +356,21 @@ public class PlayerController : MonoBehaviour {
         },
         result => {
             Debug.Log ("Got Upload URL: " + result.AssetUploadUrl);
+
+            string SASToken = result.AssetUploadUrl;
+            SASToken = SASToken.Remove(SASToken.LastIndexOf("&api"));
+            string StorageAccountName = SASToken.Substring(8,SASToken.IndexOf("blob")-9);
+            SASToken = SASToken.Substring(SASToken.IndexOf("sv"));
+
+            StorageCredentials creds = new StorageCredentials(SASToken);
+            CloudStorageAccount storageAccount = new CloudStorageAccount(creds, StorageAccountName, "core.windows.net", true);
+    		CloudBlobClient blobClient = storageAccount.CreateCloudBlobClient();
+    		CloudBlobContainer container = blobClient.GetContainerReference("gameassets");
+    		CloudBlockBlob blockBlob = container.GetBlockBlobReference(fileName);
+
             ShowLoader("Reading File...");
-            StartCoroutine(UploadFile(result.AssetUploadUrl));
+
+            UploadToAzure(blockBlob);
         },
         error => {
             Debug.LogError("UploadURL Error: " + error.GenerateErrorReport());
@@ -357,29 +378,41 @@ public class PlayerController : MonoBehaviour {
         });
     }
 
-    IEnumerator UploadFile(string url) {
-        byte[] fileAsBytes = File.ReadAllBytes(lastFilePath);
-        Debug.Log ("Beginning Upload...");
-        ShowLoader("Uploading...");
+    async void UploadToAzure(CloudBlockBlob blockBlob) {
+        long fileSize = new FileInfo(lastFilePath).Length;
 
-        using (UnityWebRequest www = UnityWebRequest.Put(url, fileAsBytes)) {
-            www.uploadHandler.contentType = "application/zip";
-            www.SetRequestHeader("x-ms-blob-type", "BlockBlob");
+        ShowLoader("Uploading... Please Wait.");
 
-            UnityWebRequestAsyncOperation operation = www.SendWebRequest();
-    
-            while (!www.isDone) {
-                ShowLoader(string.Format("Uploading... {0}%", (www.uploadProgress * 100f).ToString("F1")));
-                yield return null;
-            }
+        try {
+            await Task.Run(() => {
+                Thread.Sleep(500);
+            });
 
-            if(www.isNetworkError || www.isHttpError) {
-                Debug.LogError(www.error);
-                Inform ("Upload Error:\n\n" + www.error);
-            } else {
-                Inform ("Upload Complete!");
-            }
+            var progressHandler = new Progress<StorageProgress>(
+            value => {
+                ShowLoader(string.Format("Uploading... {0}%", (100 * value.BytesTransferred / fileSize).ToString()));
+            });
+
+            var progress = progressHandler as IProgress<StorageProgress>;
+
+            CancellationToken caToken = new CancellationToken();
+
+    	    await blockBlob.UploadFromFileAsync(
+                lastFilePath, 
+                AccessCondition.GenerateEmptyCondition(), 
+                new BlobRequestOptions{
+                    ParallelOperationThreadCount = 1
+                }, 
+                null, 
+                progress, 
+                caToken
+            );
+        } catch (System.Exception e) {
+            Debug.LogError (e);
+            Inform ("Upload Error:\n\n" + e.Message);
         }
+
+        Inform ("Upload Complete!");
     }
 
     public void ListContainerImages() {
@@ -405,6 +438,59 @@ public class PlayerController : MonoBehaviour {
             Inform("GET IMAGES FAILED: " + error.ErrorMessage);
             Debug.LogError ("GET IMAGES FAILED: " + error.ToString());
         });
+    }
+
+    public void DeleteContainerImage(ContainerID identity) {
+        ShowLoader("Getting Credentials...");
+        PlayFabMultiplayerAPI.GetContainerRegistryCredentials(new GetContainerRegistryCredentialsRequest(),
+        result => {
+            Debug.Log("GOT CREDENTIALS OK: " + result.ToJson());
+            StartCoroutine(DeleteContainerImageRequest(identity, result.Username, result.Password, result.DnsName));
+        },
+        error => {
+            Debug.LogError(error.GenerateErrorReport());
+            Inform("Error:\n\n" + error.ErrorMessage);
+        });
+    }
+
+    IEnumerator DeleteContainerImageRequest(ContainerID identity, string user, string pass, string repo) {
+        ShowLoader("Deleting...");
+
+        string url = $"https://{repo}/acr/v1/{identity.containerName}";
+        Debug.Log ("ACR URL: " + url);
+
+        using (UnityWebRequest www = UnityWebRequest.Delete(url)) {
+            string auth = BasicAuthenticate(user, pass);
+            www.SetRequestHeader("AUTHORIZATION", auth);
+
+            UnityWebRequestAsyncOperation operation = www.SendWebRequest();
+    
+            while (!www.isDone) {
+                ShowLoader("Deleting Container...");
+                yield return null;
+            }
+
+            if (www.isNetworkError || www.isHttpError) {
+                Debug.LogError(www.error);
+                Inform ("Delete Error:\n\n" + www.error);
+            } else {
+                HideLoader();
+                Debug.Log ("Deleted Image: " + identity.containerName);
+                Destroy(identity.gameObject);
+            }
+
+            Debug.Log ("RES: " + www.responseCode);
+            foreach (var res in www.GetResponseHeaders()) {
+                Debug.Log ("res: " + res.Key + ": " + res.Value);
+            }
+        }
+    }
+
+    private string BasicAuthenticate(string username, string password) {
+        string auth = username + ":" + password;
+        auth = System.Convert.ToBase64String(System.Text.Encoding.GetEncoding("ISO-8859-1").GetBytes(auth));
+        auth = "Basic " + auth;
+        return auth;
     }
 
     public void GetContainerTags(ContainerID identity) {
