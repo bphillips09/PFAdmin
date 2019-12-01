@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using PlayFab;
+using PlayFab.Json;
 using PlayFab.AdminModels;
 using PlayFab.MultiplayerModels;
 using PlayFab.AuthenticationModels;
@@ -19,6 +20,7 @@ using System.Diagnostics;
 using Debug = UnityEngine.Debug;
 using SFB;
 using UnityEngine.Networking;
+using System.Linq;
 
 public class PlayerController : MonoBehaviour {
     [SerializeField] private Button createContainerButton;
@@ -44,11 +46,15 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private Text informTagsText;
     [SerializeField] private InputField informField;
     [SerializeField] private GameObject informFieldModal;
+    [SerializeField] private InputField informPolicyText;
+    [SerializeField] private GameObject informPolicyModal;
+    [SerializeField] private ContainerID informContainerDeletionID;
+    [SerializeField] private GameObject informContainerDeletionModal;
+    [SerializeField] private Text informContainerDeletionText;
     private PlayerID lastPlayerIdentifier;
     private bool selectAll = false;
     private int frames = 0;
     private string lastURL = "";
-    
     [Header("Player InfoWindow")]
     [SerializeField] private Text displayName;
     [SerializeField] private Text lastLogin;
@@ -61,7 +67,6 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private Text deletionWarningText;
     [SerializeField] private GameObject deletionWarningModal;
     [SerializeField] private Image mapImage;
-    //
     [Header("Ban Window")]
     [SerializeField] private GameObject banModal;    
     [SerializeField] private Text banText;
@@ -78,8 +83,11 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private InputField usernameNewValue;
     [Header("Login Window")]
     [SerializeField] private GameObject loginWindow;
+    [SerializeField] private GameObject twoFactorLoginWindow;
     [SerializeField] private InputField titleIDField;
     [SerializeField] private InputField secretKeyField;
+    [SerializeField] private InputField usernameField;
+    [SerializeField] private InputField passwordField;
     [Header("Build Select Window")]
     [SerializeField] private Text buildTitle;
     [SerializeField] private GameObject buildButton;
@@ -124,6 +132,7 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private InputField commentField;
     [SerializeField] private InputField resourceField;
     [SerializeField] private InputField principalField;
+    private List<string> policyChanges;
     [Header("Asset Upload Window")]
     [SerializeField] private GameObject assetButton;
     [SerializeField] private GameObject assetView;
@@ -135,6 +144,12 @@ public class PlayerController : MonoBehaviour {
     [SerializeField] private InputField assetMountPathField;
     private AssetID editAssetID;
     private string lastFilePath;
+    [Header("Studios Window")]
+    [SerializeField] private GameObject studiosWindow;
+    [SerializeField] private GameObject studioButton;
+    [Header("Titles Window")]
+    [SerializeField] private GameObject titlesWindow;
+    [SerializeField] private GameObject titleButton;
 
     void Awake() {
         var args = System.Environment.GetCommandLineArgs();
@@ -162,8 +177,8 @@ public class PlayerController : MonoBehaviour {
         string titleID = PlayerPrefs.GetString("titleID", null);
         string secretKey = PlayerPrefs.GetString("secretKey", null);
 
-        if ((string.IsNullOrEmpty(titleID) || 
-            string.IsNullOrEmpty(secretKey))) {
+        if (string.IsNullOrEmpty(secretKey) ||
+            string.IsNullOrEmpty(titleID)) {
             loginWindow.SetActive(true);
         } else {
             PlayFabSettings.TitleId = titleID;
@@ -203,6 +218,7 @@ public class PlayerController : MonoBehaviour {
     void HideLoader() {
         loader.SetActive(false);
     }
+
     string PowerShellDirectory() {
         string psDir = "";
         #if UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
@@ -232,28 +248,27 @@ public class PlayerController : MonoBehaviour {
         return Directory.Exists(PowerShellDirectory());        
     }
 
-    public void LoginWithTitleID() {
-        bool setupOK = false;
-        if (!string.IsNullOrEmpty(titleIDField.text)) {
+    public void Login() {
+        if (!string.IsNullOrEmpty(titleIDField.text) && !string.IsNullOrEmpty(secretKeyField.text)) {
             PlayFabSettings.TitleId = titleIDField.text;
-            setupOK = true;            
-        } else {
-            Inform("Title ID cannot be empty!");
-            setupOK = false;
-        }
-
-        if (!string.IsNullOrEmpty(secretKeyField.text)) {
             PlayFabSettings.DeveloperSecretKey = secretKeyField.text;
-            setupOK = true;
-        } else {
-            Inform("Developer Key cannot be empty!");
-            setupOK = false;
-        }
-
-        if (setupOK) {
             PlayerPrefs.SetString("titleID", PlayFabSettings.TitleId);
             PlayerPrefs.SetString("secretKey", PlayFabSettings.DeveloperSecretKey);
             Authenticate();
+        } else if (!string.IsNullOrEmpty(usernameField.text) && !string.IsNullOrEmpty(passwordField.text)) {
+            StartCoroutine(PFLogin("https://editor.playfabapi.com", 
+                                   "/DeveloperTools/User/Login", 
+                                   RequestType.LoginRequest,
+                new LoginRequest{
+
+                Email = usernameField.text,
+                Password = passwordField.text,
+                DeveloperToolProductName = "PFAdmin",
+                DeveloperToolProductVersion = Application.version,
+                TwoFactorAuth = ""
+            }));
+        } else {
+            Inform ("Please use valid credentials to login.");
         }
     }
 
@@ -278,6 +293,8 @@ public class PlayerController : MonoBehaviour {
             Inform ("Authentication Success!\n\nExpires " + result.TokenExpiration.Value.ToLocalTime().ToString());
             HideLoader();
             loginWindow.SetActive(false);
+            DestroyStudioWindow();
+            DestroyTitlesWindow();
         }, error => {
             HideLoader();
             loginWindow.SetActive(true);
@@ -381,13 +398,9 @@ public class PlayerController : MonoBehaviour {
     async void UploadToAzure(CloudBlockBlob blockBlob) {
         long fileSize = new FileInfo(lastFilePath).Length;
 
-        ShowLoader("Uploading... Please Wait.");
+        ShowLoader("Uploading...\nPlease Wait.");
 
         try {
-            await Task.Run(() => {
-                Thread.Sleep(500);
-            });
-
             var progressHandler = new Progress<StorageProgress>(
             value => {
                 ShowLoader(string.Format("Uploading... {0}%", (100 * value.BytesTransferred / fileSize).ToString()));
@@ -396,6 +409,10 @@ public class PlayerController : MonoBehaviour {
             var progress = progressHandler as IProgress<StorageProgress>;
 
             CancellationToken caToken = new CancellationToken();
+
+            await Task.Run(() => {
+                Thread.Sleep(500);
+            });
 
     	    await blockBlob.UploadFromFileAsync(
                 lastFilePath, 
@@ -417,7 +434,9 @@ public class PlayerController : MonoBehaviour {
 
     public void ListContainerImages() {
         ShowLoader();
-        PlayFabMultiplayerAPI.ListContainerImages(new ListContainerImagesRequest(),
+        PlayFabMultiplayerAPI.ListContainerImages(new ListContainerImagesRequest{
+            PageSize = 50
+        },
         result => {
             HideLoader();
             Debug.Log ("GOT IMAGES OK: " + result.ToJson().ToString());
@@ -441,6 +460,12 @@ public class PlayerController : MonoBehaviour {
     }
 
     public void DeleteContainerImage(ContainerID identity) {
+        informContainerDeletionID.containerName = identity.containerName;
+        informContainerDeletionText.text = $"Are you sure you want to delete container image \"{identity.containerName}\"?";
+        informContainerDeletionModal.SetActive(true);
+    }
+
+    public void ConfirmDeleteContainerImage(ContainerID identity) {
         ShowLoader("Getting Credentials...");
         PlayFabMultiplayerAPI.GetContainerRegistryCredentials(new GetContainerRegistryCredentialsRequest(),
         result => {
@@ -457,11 +482,14 @@ public class PlayerController : MonoBehaviour {
         ShowLoader("Deleting...");
 
         string url = $"https://{repo}/acr/v1/{identity.containerName}";
-        Debug.Log ("ACR URL: " + url);
+
+        Debug.Log("Deletion URL: " + url);
 
         using (UnityWebRequest www = UnityWebRequest.Delete(url)) {
             string auth = BasicAuthenticate(user, pass);
             www.SetRequestHeader("AUTHORIZATION", auth);
+
+            Debug.Log("AUTHORIZATION: " + auth);
 
             UnityWebRequestAsyncOperation operation = www.SendWebRequest();
     
@@ -473,15 +501,18 @@ public class PlayerController : MonoBehaviour {
             if (www.isNetworkError || www.isHttpError) {
                 Debug.LogError(www.error);
                 Inform ("Delete Error:\n\n" + www.error);
+                foreach (var header in www.GetResponseHeaders()) {
+                    Debug.LogWarning(header);
+                }
             } else {
                 HideLoader();
                 Debug.Log ("Deleted Image: " + identity.containerName);
-                Destroy(identity.gameObject);
-            }
-
-            Debug.Log ("RES: " + www.responseCode);
-            foreach (var res in www.GetResponseHeaders()) {
-                Debug.Log ("res: " + res.Key + ": " + res.Value);
+                Transform containerParent = containerButton.transform.parent;
+                for (int i = 0; i < containerParent.childCount; i++) {
+                    if (containerParent.GetChild(i).GetComponent<ContainerID>().containerName.Equals(identity.containerName)) {
+                        Destroy(containerParent.GetChild(i).gameObject);
+                    }
+                }
             }
         }
     }
@@ -803,10 +834,10 @@ public class PlayerController : MonoBehaviour {
                 PolicyID identity = newPolicyButton.GetComponent<PolicyID>();
                 identity.SetPolicy(policy.Action, policy.ApiConditions,
                 policy.Comment, policy.Effect, policy.Principal, policy.Resource);
-                //EditPolicy(identity);
                 newPolicyButton.SetActive(true);
             }
             if (result.Statements.Count > 0) {
+                policyChanges = new List<string>();
                 policyWindow.SetActive(true);
             }
         },
@@ -818,6 +849,7 @@ public class PlayerController : MonoBehaviour {
 
     public void DeletePolicy() {
         if (editPolicyID) {
+            TrackPolicyModifier($"Modified: DELETED {editPolicyID.Resource}");
             Destroy (editPolicyID.gameObject);
             editPolicyWindow.SetActive(false);
         }
@@ -831,7 +863,6 @@ public class PlayerController : MonoBehaviour {
         PolicyID identity = newPolicyButton.GetComponent<PolicyID>();
         identity.SetPolicy("*", null, "", EffectType.Deny, "*", "pfrn:api--*");
         EditPolicy(identity);
-        newPolicyButton.SetActive(true);
     }  
 
     public void SavePolicy(PolicyID identity) {
@@ -841,6 +872,12 @@ public class PlayerController : MonoBehaviour {
         try {
             editPolicyID.SetPolicy(GetPolicyActionString(newActionType), null,
                 commentField.text, newEffectType, principalField.text, resourceField.text);
+
+            if (editPolicyID) {
+                editPolicyID.gameObject.SetActive(true);
+            }
+
+            TrackPolicyModifier($"Modified: {identity.Effect.ToString()}: {identity.Resource}");
 
             editPolicyWindow.SetActive(false);
         } catch (System.Exception e) {
@@ -858,6 +895,7 @@ public class PlayerController : MonoBehaviour {
         }
         identity.downButton.interactable = !(index == childCount-1);
         identity.upButton.interactable = !(index == 1);
+        TrackPolicyModifier($"Modified: Moved Up: {identity.Resource}");
     }
 
     public void MovePolicyDown(PolicyID identity) {
@@ -870,9 +908,18 @@ public class PlayerController : MonoBehaviour {
         }
         identity.downButton.interactable = !(index == childCount-1);
         identity.upButton.interactable = !(index == 1);
+        TrackPolicyModifier($"Modified: Moved Down: {identity.Resource}");
     }
 
-    public void FinishEditingPolicies() {
+    private void TrackPolicyModifier(string modification) {
+        if (policyChanges == null) {
+            policyChanges = new List<string>();
+        }
+
+        policyChanges.Add(modification);
+    }
+
+    public void FinishEditingPolicies(bool update) {
         ShowLoader();
 
         List<PermissionStatement> policyList = new List<PermissionStatement>();
@@ -882,6 +929,22 @@ public class PlayerController : MonoBehaviour {
                 PolicyID policyIdentity = policyParent.GetChild(i).GetComponent<PolicyID>();
                 policyList.Add(policyIdentity.GetPermissionStatement());
             }
+        }
+
+        if (policyChanges != null && policyChanges.Count > 0) {
+            if (!update) {
+                string changes = "";
+                foreach (string change in policyChanges) {
+                    changes += change + "\n";
+                }
+                InformPolicyChanges (changes);
+                return;
+            }
+        } else {
+            Debug.Log ("No changes to API Policies!");
+            HideLoader();
+            DestroyPolicyWindow();
+            return;
         }
 
         PlayFabAdminAPI.UpdatePolicy(new UpdatePolicyRequest{
@@ -899,7 +962,6 @@ public class PlayerController : MonoBehaviour {
             Debug.LogError("Error: " + error.GenerateErrorReport());
             Inform ("ERROR: " + error.ErrorMessage);
         });
-
     }
 
     public static string GetPolicyActionString(PolicyAction policy) {
@@ -1039,19 +1101,22 @@ public class PlayerController : MonoBehaviour {
         HideLoader();
 
         foreach (var build in result.BuildSummaries) {
-            GameObject newBuildButton = Instantiate(buildButton, 
-                                         Vector3.zero, Quaternion.identity, 
-                                         buildButton.transform.parent) as GameObject;
-            ServerID identity = newBuildButton.GetComponent<ServerID>();
-            
-            identity.Region = (AzureRegion)build.RegionConfigurations[0].Region;
-            identity.ServerIdentifier = build.BuildId;
-            identity.SetBuildText(string.Format("<b>{0}</b>\n{1}\n<i>{2}</i>", 
-                                  build.BuildName, build.RegionConfigurations[0].Region,
-                                  build.RegionConfigurations[0].Status), build.BuildId,
-                                  build.RegionConfigurations[0].CurrentServerStats);
-        
-            newBuildButton.SetActive(true);
+            foreach (var region in build.RegionConfigurations) {
+                GameObject newBuildButton = Instantiate(buildButton, 
+                                             Vector3.zero, Quaternion.identity, 
+                                             buildButton.transform.parent) as GameObject;
+
+                ServerID identity = newBuildButton.GetComponent<ServerID>();
+
+                identity.Region = (AzureRegion)region.Region;
+                identity.ServerIdentifier = build.BuildId;
+                identity.SetBuildText(string.Format("<b>{0}</b>\n{1}\n<i>{2}</i>", 
+                                      build.BuildName, region.Region,
+                                      region.Status), build.BuildId,
+                                      region.CurrentServerStats);
+
+                newBuildButton.SetActive(true);
+            }
         }
 
         buildView.SetActive(true);
@@ -1122,6 +1187,7 @@ public class PlayerController : MonoBehaviour {
         ShowLoader();
         
         PlayFabMultiplayerAPI.ListMultiplayerServers(new ListMultiplayerServersRequest {
+            PageSize = 50,
             Region = identity.Region,
             BuildId = identity.ServerIdentifier
         },
@@ -1137,7 +1203,9 @@ public class PlayerController : MonoBehaviour {
 
     public void ListBuilds() {
         ShowLoader();
-        PlayFabMultiplayerAPI.ListBuildSummaries(new ListBuildSummariesRequest{},
+        PlayFabMultiplayerAPI.ListBuildSummaries(new ListBuildSummariesRequest{
+            PageSize = 50
+        },
         result => {
             HideLoader();
             if (result.BuildSummaries.Count > 0) {
@@ -1240,6 +1308,26 @@ public class PlayerController : MonoBehaviour {
             }
         }
         containerWindow.SetActive(false);
+    }
+
+    public void DestroyStudioWindow() {
+        for (int i = 0; i < studioButton.transform.parent.childCount; i++) {
+            Transform child = studioButton.transform.parent.GetChild(i);
+            if (child.gameObject.activeSelf) {
+                Destroy(child.gameObject);
+            }
+        }
+        studiosWindow.SetActive(false);
+    }
+
+    public void DestroyTitlesWindow() {
+        for (int i = 0; i < titleButton.transform.parent.childCount; i++) {
+            Transform child = titleButton.transform.parent.GetChild(i);
+            if (child.gameObject.activeSelf) {
+                Destroy(child.gameObject);
+            }
+        }
+        titlesWindow.SetActive(false);
     }
 
     public void DestroyServerWindow() {
@@ -1507,8 +1595,129 @@ public class PlayerController : MonoBehaviour {
         });
     }
 
-    public void Inventory() {
-        
+    public IEnumerator PFLogin<TRequest>(string apiEndpoint, string api, RequestType requestType, TRequest request) {
+        ShowLoader("Loading...");
+        var url = apiEndpoint + api;
+        var req = PlayFabSimpleJson.SerializeObject(request);
+
+        var headers = new Dictionary<string, string> {
+            {"Content-Type", "application/json"},
+            {"X-ReportErrorAsSuccess", "true"}
+        };
+
+        var payload = System.Text.Encoding.UTF8.GetBytes(req.Trim());
+        var www = new UnityWebRequest(url) {
+            uploadHandler = new UploadHandlerRaw(payload),
+            downloadHandler = new DownloadHandlerBuffer(),
+            method = "POST"
+        };
+
+        foreach (var header in headers) {
+            if (!string.IsNullOrEmpty(header.Key) && !string.IsNullOrEmpty(header.Value)) {
+                www.SetRequestHeader(header.Key, header.Value);
+            } else {
+                UnityEngine.Debug.LogWarning("Null header");
+            }
+        }
+
+        if (www != null) {
+            yield return www.SendWebRequest();
+
+            if (!string.IsNullOrEmpty(www.error)) {
+                Debug.LogError(www.error);
+                Inform("Error: " + www.error);
+            } else {
+                Debug.Log("Got Response: " + www.downloadHandler.text);
+                var httpResult = PlayFabSimpleJson.DeserializeObject<HTTPResponse>(www.downloadHandler.text);
+
+                if (httpResult.code != 200) {
+                    var error = GeneratePlayFabError(www.downloadHandler.text);
+                    Debug.Log (error.GenerateErrorReport());
+
+                    if ((int)error.Error == 1246 || error.ErrorMessage.Contains("TwoFactor")) {
+                        HideLoader();
+                        twoFactorLoginWindow.SetActive(true);
+                    } else {
+                        Inform("Login Error:\n\n" + error.ErrorMessage);
+                    }
+                } else {
+                    HideLoader();
+                    
+                    if (requestType == RequestType.LoginRequest) {
+                        var dataJson = PlayFabSimpleJson.SerializeObject(httpResult.data);
+                        var loginResult = PlayFabSimpleJson.DeserializeObject<PFLoginResult>(dataJson);
+                        StartCoroutine(PFLogin("https://editor.playfabapi.com", 
+                            "/DeveloperTools/User/GetStudios", RequestType.StudiosRequest,
+                            new GetPFStudiosRequest{
+                                DeveloperClientToken = loginResult.DeveloperClientToken
+                            }
+                        ));
+                    } else {
+                        var dataJson = PlayFabSimpleJson.SerializeObject(httpResult.data);
+                        var studiosResult = PlayFabSimpleJson.DeserializeObject<GetPFStudiosResult>(dataJson);
+                        foreach (var studio in studiosResult.Studios) {
+                            GameObject newStudioButton = Instantiate(studioButton, 
+                                                         Vector3.zero, Quaternion.identity, 
+                                                         studioButton.transform.parent) as GameObject;
+
+                            StudioID identity = newStudioButton.GetComponent<StudioID>();
+
+                            identity.Id = studio.Id;
+                            identity.Name = studio.Name;
+                            identity.Titles = studio.Titles;
+                            identity.SetText(studio.Name);
+                            newStudioButton.SetActive(true);
+                        }
+
+                        studiosWindow.SetActive(true);
+                    }
+                }
+            }
+        } else {
+            Debug.LogError("WebRequest was null");
+            Inform("WebRequest was null");
+        }
+    }
+
+    public void TwoFactorLogin(InputField twoFactorField) {
+        StartCoroutine(PFLogin("https://editor.playfabapi.com", 
+                               "/DeveloperTools/User/Login", 
+                               RequestType.LoginRequest,
+            new LoginRequest{
+
+            Email = usernameField.text,
+            Password = passwordField.text,
+            DeveloperToolProductName = "PFAdmin",
+            DeveloperToolProductVersion = Application.version,
+            TwoFactorAuth = twoFactorField.text
+        }));
+    }
+
+    public void SelectStudio(StudioID identity) {
+        foreach (var title in identity.Titles) {
+            GameObject newTitleButton = Instantiate(titleButton, 
+                                         Vector3.zero, Quaternion.identity, 
+                                         titleButton.transform.parent) as GameObject;
+            TitleID titleIdentity = newTitleButton.GetComponent<TitleID>();
+            titleIdentity.Id = title.Id;
+            titleIdentity.Name = title.Name;
+            titleIdentity.SecretKey = title.SecretKey;
+            titleIdentity.GameManagerUrl = title.GameManagerUrl;
+            titleIdentity.SetText(title.Name);
+            newTitleButton.SetActive(true);
+        }
+
+        titlesWindow.SetActive(true);
+    }
+
+    public void SelectTitle(TitleID identity) {
+        PlayFabSettings.TitleId = identity.Id;
+        PlayFabSettings.DeveloperSecretKey = identity.SecretKey;
+
+        PlayerPrefs.SetString("titleID", PlayFabSettings.TitleId);
+        PlayerPrefs.SetString("secretKey", PlayFabSettings.DeveloperSecretKey);
+
+        Authenticate();
     }
 
     public void ViewPlayer(PlayerID playerIdentifier) {
@@ -1589,4 +1798,101 @@ public class PlayerController : MonoBehaviour {
         informFieldModal.SetActive(true);
     }
 
+    public void InformPolicyChanges(string changes) {
+        HideLoader();
+        informPolicyText.text = changes;
+        informPolicyModal.SetActive(true);
+    }
+
+    public PlayFabError GeneratePlayFabError(string json, object customData = null) {
+        JsonObject errorDict = null;
+        Dictionary<string, List<string>> errorDetails = null;
+        
+        try {
+            //deserialize the error
+            errorDict = PlayFabSimpleJson.DeserializeObject<JsonObject>(json);
+            if (errorDict.ContainsKey("errorDetails")) {
+                var ed = PlayFabSimpleJson.DeserializeObject<Dictionary<string, List<string>>>(errorDict["errorDetails"].ToString());
+                errorDetails = ed;
+            }
+        } catch (Exception e) {
+            return new PlayFabError() {
+                ErrorMessage = e.Message
+            };
+        }
+
+        //create new error object
+        return new PlayFabError {
+            HttpCode = errorDict.ContainsKey("code") ? Convert.ToInt32(errorDict["code"]) : 400,
+            HttpStatus = errorDict.ContainsKey("status")
+                ? (string)errorDict["status"]
+                : "BadRequest",
+            Error = errorDict.ContainsKey("errorCode")
+                ? (PlayFabErrorCode)Convert.ToInt32(errorDict["errorCode"])
+                : PlayFabErrorCode.ServiceUnavailable,
+            ErrorMessage = errorDict.ContainsKey("errorMessage")
+                ? (string)errorDict["errorMessage"]
+                : string.Empty,
+            ErrorDetails = errorDetails,
+            CustomData = customData ?? new object()
+        };
+    }
 }
+
+public class LoginRequest {
+    public string Email;
+    public string Password;
+    public string TwoFactorAuth;
+    public string DeveloperToolProductName;
+    public string DeveloperToolProductVersion;
+}
+
+public class HTTPResponse {
+    public int code;
+    public string status;
+    public object data;
+}
+
+public class PFLoginResult {
+    public string DeveloperClientToken;
+}
+
+public class GetPFStudiosRequest {
+    public string DeveloperClientToken;
+}
+
+public class GetPFStudiosResult {
+    public PFStudio[] Studios;
+}
+
+public class PFTitle {
+    public string Id;
+    public string Name;
+    public string SecretKey;
+    public string GameManagerUrl;
+}
+
+public class PFStudio {
+    public static PFStudio OVERRIDE = new PFStudio { Id = "", Name = "_OVERRIDE_", Titles = null };
+
+    public string Id;
+    public string Name;
+
+    public PFTitle[] Titles;
+
+    public PFTitle GetTitle(string titleId) {
+        if (Titles == null)
+            return null;
+        for (var i = 0; i < Titles.Length; i++)
+            if (Titles[i].Id == titleId)
+                return Titles[i];
+        return null;
+    }
+
+    public string GetTitleSecretKey(string titleId) {
+        var title = GetTitle(titleId);
+        return title == null ? "" : title.SecretKey;
+    }
+}
+
+public enum RequestType {LoginRequest, StudiosRequest}
