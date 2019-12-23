@@ -5,6 +5,7 @@ Admin API GUI application for PlayFab (Now with Unreal support!)
 
 # How To Use
 - Download a [release](https://github.com/bphillips09/PFAdmin/releases/latest)
+
 To manage your Title (add/remove Assets, create Builds):
 - Nothing else is required
 
