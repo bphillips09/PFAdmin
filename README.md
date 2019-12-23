@@ -5,11 +5,13 @@ Admin API GUI application for PlayFab (Now with Unreal support!)
 
 # How To Use
 - Download a [release](https://github.com/bphillips09/PFAdmin/releases/latest)
-- Ensure you have Docker Desktop and PowerShell installed
-- Ensure Docker is running
-- Run PFAdmin, sign in with your TitleID and the new key you created in the Game Manager
+To manage your Title (add/remove Assets, create Builds):
+- Nothing else is required
+
+To create a Linux image to run a build:
+- Ensure you have Docker Desktop and PowerShell installed, and that Docker is running
 - Select "Create Container"
-- In the new window that opened, enter a server image name (something like "server_base_image" etc)
+- In the new window that opened, enter a server image name (something like "linux_image" etc)
 - Enter your TCP or UDP port (for example: 7777)
 - Once the program builds and uploads the container, return to PFAdmin
 - Select "Create Server Build"
@@ -17,7 +19,6 @@ Admin API GUI application for PlayFab (Now with Unreal support!)
 - Add your server Asset to the "Assets" field, make sure you set the mount point (or leave it at the default '/data/Assets/')
 - Set your start game command (for example: /data/Assets/GameServer.x86_64)
 - Select "Create Build"
-
 - The next time you want to update your server, you can just reuse the same base image. 
 
 # How To Update Your Game Server
