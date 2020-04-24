@@ -1,0 +1,41 @@
+{
+    "BuildName": "ExampleBuild",
+    "ContainerFlavor": "CustomLinux",
+    "ContainerImageReference": {
+        "ImageName": "ubuntu_stock_march_2020",
+        "Tag": "latest"
+    },
+    "ContainerRunCommand": "chmod +x /data/Assets/GameServer.x86_64;/data/Assets/GameServer.x86_64 -batchmode -nographics -logFile /data/GameLogs/Server.log",
+    "GameAssetReferences": [
+        {
+            "FileName": "Linux_0_3_0.zip",
+            "MountPath": "/data/Assets/"
+        }
+    ],
+    "MultiplayerServerCountPerVm": 4,
+    "Ports": [
+        {
+            "Name": "gameUDP",
+            "Num": 7777,
+            "Protocol": "UDP"
+        },
+		{
+            "Name": "gameTCP",
+            "Num": 8080,
+            "Protocol": "TCP"
+        }
+    ],
+    "RegionConfigurations": [
+        {
+            "MaxServers": 4,
+            "Region": "EastUs",
+            "StandbyServers": 4
+        },
+		{
+            "MaxServers": 4,
+            "Region": "WestUs",
+            "StandbyServers": 4
+        }
+    ],
+    "VmSize": "Standard_A4_v2"
+}
