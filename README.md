@@ -29,6 +29,38 @@ To create a Linux image to run a build:
 - Change the "Start Game Command" to reflect your new asset name
 - Create the build
 
+# CLI
+- Available Commands: 
+    * *-cli* (Required)
+    * *-titleid [TitleID]* (Required; Logs in with TitleID)
+    * *-key [SecretKey]* (Required; Logs in with Secret Key)
+    * *-uploadasset [/Path/To/Asset]* (Optional; Uploads an asset)
+    * *-config [/Path/To/JSON Build Config]* (Optional; Creates the build with this configuration)
+    * *-overrideasset [UploadedAssetName]* (Optional; Overrides the asset in the build JSON)
+    * *-createbuild* (From JSON config) (Optional; Created a build)
+    * *-editqueue [Queue Name]* (Optional; Adds created build to this Matchmaking Queue for allocation)
+    
+     
+- The application should return exit code '0' on successful completion of the command. If there's an error, it will exit with code '1'.
+- For an example .json file for a build configuration, see [here](https://github.com/bphillips09/PFAdmin/blob/master/build.json).
+- CLI Examples:
+    * This configuration will 
+        * Upload the .zip
+        * Create the build with the .zip as the server asset (if overridden) or use the asset specified in the build JSON
+        * Set the selected Matchmaking queue to allocate this server build when a match is made
+    * Windows
+        ```
+        .\PFACLI.exe -cli -titleid [TITLE ID] -key [SECRET KEY] -uploadasset "[Path to Server .zip]" -config "[Path to Build Config .json]" -overrideasset "[Asset Name .zip]" -createbuild -editqueue [Queue Name]
+        ```
+    * Mac
+        ```
+        .\PFACLI.app -cli -titleid [TITLE ID] -key [SECRET KEY] -uploadasset "[Path to Server .zip]" -config "[Path to Build Config .json]" -overrideasset "[Asset Name .zip]" -createbuild -editqueue [Queue Name]
+        ```
+    * Linux
+        ```
+        .\PFACLI.x86_64 -cli -titleid [TITLE ID] -key [SECRET KEY] -uploadasset "[Path to Server .zip]" -config "[Path to Build Config .json]" -overrideasset "[Asset Name .zip]" -createbuild -editqueue [Queue Name]
+        ```
+
 # Dependencies
 - [Docker](https://www.docker.com/products/docker-desktop) and [PowerShell](https://github.com/PowerShell/PowerShell/releases/latest)
 

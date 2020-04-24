@@ -23,6 +23,8 @@ using UnityEngine.Networking;
 using System.Linq;
 
 public class PlayerController : MonoBehaviour {
+    private bool CLI = false;
+    private string sessionToken;
     [SerializeField] private Button createContainerButton;
     [SerializeField] private BuildBundleID buildID;
     [SerializeField] private GameObject loader;
@@ -154,36 +156,253 @@ public class PlayerController : MonoBehaviour {
     void Awake() {
         var args = System.Environment.GetCommandLineArgs();
 
-        if (!args[0].Contains("-batchmode")) {
+        if (!args.Contains("-cli")) {
             return;
         }
 
+        CLI = true;
+
+        string titleID = "";
+        string devKey = "";
+
         for (int i = 0; i < args.Length; i++) {
-            Debug.Log (args[i]);
-            if (args[i].Equals("-createcontainer")) {
-                //GetContainerCredentialsWithToken();
+            switch (args[i]) {
+                case "-titleid":
+                titleID = args[i + 1];
+                break;
+
+                case "-key":
+                devKey = args[i + 1];
+                break;
+            }
+        }
+
+        if (!string.IsNullOrEmpty(devKey)) {
+            PlayerPrefs.SetString("secretKey", devKey);
+        }
+
+        if (!string.IsNullOrEmpty(titleID)) {
+            PlayerPrefs.SetString("titleID", titleID);
+        }
+
+        PlayerPrefs.SetInt("autoLogin", 1);
+    }
+
+    IEnumerator ExecuteFromArgs() {
+        var args = System.Environment.GetCommandLineArgs();
+
+        if (!args.Contains("-cli")) {
+            yield break;
+        }
+
+        for (int i = 0; i < args.Length; i++) {
+            switch (args[i]) {
+                case "-uploadasset":
+                    lastFilePath = args[i + 1];
+                    ConfirmUpload();
+                break;
+
+                case "-createcontainer":
+                    GetContainerCredentialsWithToken();
+                break;
+
+                case "-createbuild":
+                    if (!args.Contains("-uploadasset")) {
+                        CLICreateBuild();
+                    }
+                break;
             }
         }
     }
 
-    void Start() {
-        Application.targetFrameRate = 60;
-        
-        createContainerButton.interactable = !Application.isMobilePlatform;
+    IEnumerator AddBuildIDToMatchmakingQueue(string buildID, string queueName, RequestType requestType, SetMatchmakingQueueRequest setRequest) {
+        string api = "";
+        string req = "";
 
-        float height = Screen.currentResolution.height*0.75f;
-        Screen.SetResolution((int)(height/1.4f), (int)height, false);
+        if (requestType == RequestType.GetMatchQueue) {
+            Debug.Log ("Getting current MM queue...");
+            var request = new GetMatchmakingQueueRequest{
+                QueueName = queueName
+            };
+
+            api = "/GetMatchmakingQueue";
+
+            req = JsonUtility.ToJson(request);
+        } else if (requestType == RequestType.SetMatchQueue) {
+            Debug.Log ("Setting current MM queue...");
+            api = "/SetMatchmakingQueue";
+         
+            req = PlayFabSimpleJson.SerializeObject(setRequest);
+        }
+
+        string apiEndpoint = $"https://{PlayFabSettings.TitleId}.playfabapi.com/Match/";
+        var url = apiEndpoint + api;
+
+
+        var headers = new Dictionary<string, string> {
+            {"Content-Type", "application/json"},
+            {"X-ReportErrorAsSuccess", "true"},
+            {"X-SecretKey", PlayFabSettings.DeveloperSecretKey},
+            {"X-EntityToken", sessionToken}
+        };
+
+        Debug.Log(req);
+
+        var payload = System.Text.Encoding.UTF8.GetBytes(req.Trim());
+
+        var www = new UnityWebRequest(url) {
+            uploadHandler = new UploadHandlerRaw(payload),
+            downloadHandler = new DownloadHandlerBuffer(),
+            method = "POST"
+        };
+
+        foreach (var header in headers) {
+            if (!string.IsNullOrEmpty(header.Key) && !string.IsNullOrEmpty(header.Value)) {
+                www.SetRequestHeader(header.Key, header.Value);
+            } else {
+                UnityEngine.Debug.LogWarning("Null header");
+            }
+        }
+
+        if (www != null) {
+            yield return www.SendWebRequest();
+
+            if (!string.IsNullOrEmpty(www.error)) {
+                Debug.LogError(www.error);
+                Inform("Error: " + www.error);
+                Debug.Log("Info: " + www.downloadHandler.text);
+                Application.Quit(1);
+            } else {
+                Debug.Log("Got Response: " + www.downloadHandler.text);
+                var httpResult = PlayFabSimpleJson.DeserializeObject<HTTPResponse>(www.downloadHandler.text);
+
+                if (httpResult.code != 200) {
+                    var error = GeneratePlayFabError(www.downloadHandler.text);
+                    Debug.Log (error.GenerateErrorReport());
+                    Application.Quit(1);
+                } else {
+                    if (requestType == RequestType.GetMatchQueue) {
+                        Debug.Log ("JSON: " + httpResult.data);
+                        var dataJson = PlayFabSimpleJson.SerializeObject(httpResult.data);
+                        var MMQueue = PlayFabSimpleJson.DeserializeObject<GetMatchmakingQueueResult>(dataJson);
+
+                        Debug.Log (MMQueue.MatchmakingQueue.Name);
+                        MMQueue.MatchmakingQueue.BuildId = buildID;
+                        MMQueue.MatchmakingQueue.ServerAllocationEnabled = true;
+
+                        var sendRequest = new SetMatchmakingQueueRequest{
+                            MatchmakingQueue = MMQueue.MatchmakingQueue
+                        };
+
+                        StartCoroutine(AddBuildIDToMatchmakingQueue(null, null, RequestType.SetMatchQueue, sendRequest));
+                    } else {
+                        Debug.Log("Done!");
+                        Application.Quit(0);
+                    }
+                }
+            }
+        } else {
+            Debug.LogError("WebRequest was null");
+            Inform("WebRequest was null");
+            Application.Quit(1);
+        }
+    }
+
+    void CLICreateBuild() {
+        Debug.Log ("CLI: Create build with JSON");
+
+        string configAsJSON = GetArg("-config");
+
+        if (string.IsNullOrEmpty(configAsJSON)) {
+            Debug.LogError ("No Config Provided!\n\nPlease use the '-config' argument.\n\n");
+            Application.Quit(1);
+            return;
+        }
+
+        try {
+            string json = File.ReadAllText(configAsJSON);
+
+            var serializer = PluginManager.GetPlugin<ISerializerPlugin>(PluginContract.PlayFab_Serializer);
+            var request = serializer.DeserializeObject<CreateBuildWithCustomContainerRequest>(json);
+
+            string overrideAsset = GetArg("-overrideasset");
+            if (!string.IsNullOrEmpty(overrideAsset)) {
+                request.GameAssetReferences = new List<AssetReferenceParams> {
+                    new AssetReferenceParams() {
+                        FileName = overrideAsset,
+                        MountPath = "/data/Assets/"
+                    }
+                };
+            }
+
+            CreateBuildWithRequest(request);
+        } catch (System.Exception e) {
+            Debug.LogError(e);
+            Application.Quit(1);
+        }
+    }
+
+    string[] SplitStringArray(string array) {
+        return array.Substring(1, array.Length-2).Replace(" ", String.Empty).Split(',');
+    }
+
+    private static string GetArg(string name) {
+        var args = System.Environment.GetCommandLineArgs();
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i] == name && args.Length > i + 1) {
+                return args[i + 1];
+            }
+        }
+        return null;
+    }
+
+    void Start() {
+        if (!CLI) {
+            Application.targetFrameRate = 60;
+
+            createContainerButton.interactable = !Application.isMobilePlatform;
+
+            float height = Screen.currentResolution.height*0.75f;
+            Screen.SetResolution((int)(height/1.6f), (int)height, false);
+        } else {
+            Debug.Log ("Starting from CLI");
+        }
+
+        bool autoLogin = PlayerPrefs.GetInt("autoLogin", 0) == 1 ? true : false;
 
         string titleID = PlayerPrefs.GetString("titleID", null);
         string secretKey = PlayerPrefs.GetString("secretKey", null);
+        string username = PlayerPrefs.GetString("username", null);
+        string password = PlayerPrefs.GetString("password", null);
 
-        if (string.IsNullOrEmpty(secretKey) ||
-            string.IsNullOrEmpty(titleID)) {
-            loginWindow.SetActive(true);
+        if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(password)) {
+            usernameField.text = username;
+            passwordField.text = password;
+        }
+
+        if (autoLogin) {
+            if (string.IsNullOrEmpty(secretKey) &&
+                string.IsNullOrEmpty(titleID)) {
+            
+                if (!string.IsNullOrEmpty(username) &&
+                !string.IsNullOrEmpty(password)) {
+                    Login();
+                } else {
+                    loginWindow.SetActive(true);
+                }
+            } else if (string.IsNullOrEmpty(username) &&
+                string.IsNullOrEmpty(password)) {
+                PlayFabSettings.TitleId = titleID;
+                PlayFabSettings.DeveloperSecretKey = secretKey;
+                Authenticate();
+            } else {
+                Login();
+            }
+        } else if (CLI) {
+            Debug.LogWarning("No login information provided. Quitting...");
+            QuitIfCLI(1);
         } else {
-            PlayFabSettings.TitleId = titleID;
-            PlayFabSettings.DeveloperSecretKey = secretKey;
-            Authenticate();
+            loginWindow.SetActive(true);
         }
 
         if (actionDropdown) {
@@ -205,12 +424,23 @@ public class PlayerController : MonoBehaviour {
         }
     }
 
+    public void OnToggleAutoLogin(Toggle toggle) {
+        PlayerPrefs.SetInt("autoLogin", toggle.isOn ? 1 : 0);
+    }
+
     void ShowLoader() {
+        Debug.Log ("Loading...");
         loaderMessage.text = "Loading...";
         loader.SetActive(true);
     }
 
     void ShowLoader(string message) {
+        Debug.Log(message);
+        loaderMessage.text = message;
+        loader.SetActive(true);
+    }
+
+    void ShowUploadLoader(string message) {
         loaderMessage.text = message;
         loader.SetActive(true);
     }
@@ -256,6 +486,9 @@ public class PlayerController : MonoBehaviour {
             PlayerPrefs.SetString("secretKey", PlayFabSettings.DeveloperSecretKey);
             Authenticate();
         } else if (!string.IsNullOrEmpty(usernameField.text) && !string.IsNullOrEmpty(passwordField.text)) {
+            PlayerPrefs.SetString("username", usernameField.text);
+            PlayerPrefs.SetString("password", passwordField.text);
+            
             StartCoroutine(PFLogin("https://editor.playfabapi.com", 
                                    "/DeveloperTools/User/Login", 
                                    RequestType.LoginRequest,
@@ -277,11 +510,11 @@ public class PlayerController : MonoBehaviour {
         PlayFabSettings.DeveloperSecretKey = "";
         PlayFabClientAPI.ForgetAllCredentials();
         PlayerPrefs.DeleteAll();
-        Application.Quit();
+        Application.Quit(0);
     }
 
     public void Exit() {
-        Application.Quit();
+        Application.Quit(0);
     }
 
     public void Authenticate() {
@@ -291,10 +524,12 @@ public class PlayerController : MonoBehaviour {
         result => {
             Debug.Log("GOT TOKEN OK: " + result.ToJson().ToString());
             Inform ("Authentication Success!\n\nExpires " + result.TokenExpiration.Value.ToLocalTime().ToString());
+            sessionToken = result.EntityToken;
             HideLoader();
             loginWindow.SetActive(false);
             DestroyStudioWindow();
             DestroyTitlesWindow();
+            StartCoroutine(ExecuteFromArgs());
         }, error => {
             HideLoader();
             loginWindow.SetActive(true);
@@ -367,6 +602,10 @@ public class PlayerController : MonoBehaviour {
 
     public void ConfirmUpload() {
         ShowLoader("Getting Upload URL...");
+        if (!File.Exists(lastFilePath)) {
+            Inform("File does not exist!");
+            return;
+        }
         string fileName = Path.GetFileName(lastFilePath);
         PlayFabMultiplayerAPI.GetAssetUploadUrl(new GetAssetUploadUrlRequest{
             FileName = fileName
@@ -392,18 +631,29 @@ public class PlayerController : MonoBehaviour {
         error => {
             Debug.LogError("UploadURL Error: " + error.GenerateErrorReport());
             Inform ("Error: " + error.ErrorMessage);
+            QuitIfCLI(1);
         });
     }
 
     async void UploadToAzure(CloudBlockBlob blockBlob) {
         long fileSize = new FileInfo(lastFilePath).Length;
 
+        float lastProgress = 0;
+
         ShowLoader("Uploading...\nPlease Wait.");
 
         try {
             var progressHandler = new Progress<StorageProgress>(
             value => {
-                ShowLoader(string.Format("Uploading... {0}%", (100 * value.BytesTransferred / fileSize).ToString()));
+                float progressFloat = (100 * value.BytesTransferred / fileSize);
+                ShowUploadLoader(string.Format("Uploading... {0}%", progressFloat.ToString()));
+
+                if (progressFloat % 10 == 0) {
+                    if (progressFloat != lastProgress) {
+                        Debug.Log("Progress: " + progressFloat.ToString() + "%");
+                        lastProgress = progressFloat;
+                    }
+                }
             });
 
             var progress = progressHandler as IProgress<StorageProgress>;
@@ -427,9 +677,23 @@ public class PlayerController : MonoBehaviour {
         } catch (System.Exception e) {
             Debug.LogError (e);
             Inform ("Upload Error:\n\n" + e.Message);
+            QuitIfCLI(1);
         }
 
         Inform ("Upload Complete!");
+        
+        var args = System.Environment.GetCommandLineArgs();
+        if (args.Contains("-createbuild")) {
+            CLICreateBuild();
+        } else {
+            QuitIfCLI(0);
+        }
+    }
+
+    void QuitIfCLI(int errorCode) {
+        if (CLI) {
+            Application.Quit(errorCode);
+        }
     }
 
     public void ListContainerImages() {
@@ -566,6 +830,35 @@ public class PlayerController : MonoBehaviour {
         CreateBuildWithCustomContainer(identity);
     }
 
+    public void CreateBuildWithRequest(CreateBuildWithCustomContainerRequest request) {
+        Debug.Log ("Creating build with configuration...");
+        var args = System.Environment.GetCommandLineArgs();
+        PlayFabMultiplayerAPI.CreateBuildWithCustomContainer(
+        request, 
+        result => {
+            Debug.Log ("CREATE BUILD OK: " + result.ToJson());
+            buildID.gameObject.SetActive(false);
+            InformURL("Build Created Successfully!\n\nBuild ID:\n" + result.BuildId, 
+            string.Format("https://developer.playfab.com/en-US/r/t/{0}/multiplayer/server/builds", PlayFabSettings.TitleId));
+            
+            if (!args.Contains("-editqueue")) {
+                QuitIfCLI(0);
+            } else {
+                StartCoroutine(AddBuildIDToMatchmakingQueue (
+                    result.BuildId, 
+                    GetArg("-editqueue"), 
+                    RequestType.GetMatchQueue, 
+                    null)
+                );
+            }
+        },
+        error => {
+            Debug.LogError ("CREATE BUILD FAILURE: " + error.ToString());
+            Inform("Build Creation Failure!\n\n" + error.ErrorMessage);
+            QuitIfCLI(1);
+        });
+    }
+
     public void CreateBuildWithCustomContainer(BuildBundleID identity) {
         ShowLoader();
         try {
@@ -613,11 +906,15 @@ public class PlayerController : MonoBehaviour {
             }
 
             if (!serverStartCommandField.text.Contains("chmod") && !identity.overrideChmod) {
-                InformExecutable("Your server asset is not marked as executable!");
+                if (CLI) {
+                    FixExecutableAsset(identity);
+                } else {
+                    InformExecutable("Your server asset is not marked as executable!");
+                }
                 return;
             }
 
-            PlayFabMultiplayerAPI.CreateBuildWithCustomContainer(new CreateBuildWithCustomContainerRequest{
+            var containerRequest = new CreateBuildWithCustomContainerRequest{
                 BuildName = identity.buildName.text,
                 ContainerFlavor = GetEnumValue<ContainerFlavor>(identity.containerFlavor.options[identity.containerFlavor.value].text),
                 ContainerImageReference = new ContainerImageReference{
@@ -630,7 +927,9 @@ public class PlayerController : MonoBehaviour {
                 GameAssetReferences = assetList,
                 Ports = portList,
                 RegionConfigurations = regionList
-            }, 
+            };
+
+            PlayFabMultiplayerAPI.CreateBuildWithCustomContainer(containerRequest, 
             result => {
                 Debug.Log ("CREATE BUILD OK: " + result.ToJson());
                 buildID.gameObject.SetActive(false);
@@ -782,6 +1081,8 @@ public class PlayerController : MonoBehaviour {
             };
 
             Process.Start(startInfo);
+            
+            QuitIfCLI(0);
         } else {
             StartCoroutine(WaitForPSMac(ps1File));
         }
@@ -1372,6 +1673,8 @@ public class PlayerController : MonoBehaviour {
         process.Start();
        
         process.WaitForExit();
+
+        QuitIfCLI(0);
         yield return null;
     }
 
@@ -1412,13 +1715,24 @@ public class PlayerController : MonoBehaviour {
     public void ConfirmDeleteSelected() {
         ShowLoader();
         Transform parent = playerButton.transform.parent;
+        List<PlayerID> playersToDelete = new List<PlayerID>();
         for (int i = 0; i < parent.childCount; i++) {
             if (parent.GetChild(i).GetComponentInChildren<Toggle>().isOn) {
-                DeletePlayerImmediate(parent.GetChild(i).GetComponent<PlayerID>());
+                playersToDelete.Add(parent.GetChild(i).GetComponent<PlayerID>());            
             }
         }
+        StartCoroutine(DeletePlayers(playersToDelete));
         playerInfoWindow.SetActive(false);
         deletionWarningModal.SetActive(false);
+    }
+
+    IEnumerator DeletePlayers(List<PlayerID> players) {
+        for (int i = 0; i < players.Count; i++) {
+            ShowLoader($"Deleting Player: {players[i].displayName}...");
+            Debug.Log ("Delete player " + players[i].displayName);
+            DeletePlayerImmediate(players[i]);
+            yield return new WaitForSeconds(3f);
+        }
         HideLoader();
     }
 
@@ -1638,6 +1952,7 @@ public class PlayerController : MonoBehaviour {
                         HideLoader();
                         twoFactorLoginWindow.SetActive(true);
                     } else {
+                        loginWindow.SetActive(true);
                         Inform("Login Error:\n\n" + error.ErrorMessage);
                     }
                 } else {
@@ -1655,6 +1970,10 @@ public class PlayerController : MonoBehaviour {
                     } else {
                         var dataJson = PlayFabSimpleJson.SerializeObject(httpResult.data);
                         var studiosResult = PlayFabSimpleJson.DeserializeObject<GetPFStudiosResult>(dataJson);
+                        
+                        PlayerPrefs.SetString("username", usernameField.text);
+                        PlayerPrefs.SetString("password", passwordField.text);
+                        
                         foreach (var studio in studiosResult.Studios) {
                             GameObject newStudioButton = Instantiate(studioButton, 
                                                          Vector3.zero, Quaternion.identity, 
@@ -1714,9 +2033,6 @@ public class PlayerController : MonoBehaviour {
         PlayFabSettings.TitleId = identity.Id;
         PlayFabSettings.DeveloperSecretKey = identity.SecretKey;
 
-        PlayerPrefs.SetString("titleID", PlayFabSettings.TitleId);
-        PlayerPrefs.SetString("secretKey", PlayFabSettings.DeveloperSecretKey);
-
         Authenticate();
     }
 
@@ -1769,6 +2085,8 @@ public class PlayerController : MonoBehaviour {
     }
 
     public void InformURL(string message, string URL) {
+        Debug.Log (message);
+        Debug.Log ("URL: " + URL);
         HideLoader();
         lastURL = URL;
         informText.text = message;
@@ -1778,6 +2096,7 @@ public class PlayerController : MonoBehaviour {
     }
 
     public void InformExecutable(string message) {
+        Debug.Log(message);
         HideLoader();
         informExecutableText.text = message;
         informExecutableModal.SetActive(true);
@@ -1793,12 +2112,14 @@ public class PlayerController : MonoBehaviour {
     }
 
     public void InformField(string message) {
+        Debug.Log(message);
         HideLoader();
         informField.text = message;
         informFieldModal.SetActive(true);
     }
 
     public void InformPolicyChanges(string changes) {
+        Debug.Log(changes);
         HideLoader();
         informPolicyText.text = changes;
         informPolicyModal.SetActive(true);
@@ -1895,4 +2216,525 @@ public class PFStudio {
     }
 }
 
-public enum RequestType {LoginRequest, StudiosRequest}
+public class MatchmakingQueueConfig {
+    public string BuildId;
+    public List<DifferenceRule> DifferenceRules;
+    public List<MatchTotalRule> MatchTotalRules;
+    public uint MaxMatchSize;
+    public uint? MaxTicketSize;
+    public uint MinMatchSize;
+    public string Name;
+    public RegionSelectionRule RegionSelectionRule;
+    public bool ServerAllocationEnabled;
+    public List<SetIntersectionRule> SetIntersectionRules;
+    public StatisticsVisibilityToPlayers StatisticsVisibilityToPlayers;
+    public List<StringEqualityRule> StringEqualityRules;
+    public List<TeamDifferenceRule> TeamDifferenceRules;
+    public List<MatchmakingQueueTeam> Teams;
+    public TeamSizeBalanceRule TeamSizeBalanceRule;
+    public TeamTicketSizeSimilarityRule TeamTicketSizeSimilarityRule;
+}
+
+public class TeamSizeBalanceRule
+{
+    /// <summary>
+    /// Controls how the Difference parameter expands over time. Only one expansion can be set per rule. When this is set,
+    /// Difference is ignored.
+    /// </summary>
+    public CustomTeamSizeBalanceRuleExpansion CustomExpansion ;
+    /// <summary>
+    /// The allowed difference in team size between any two teams.
+    /// </summary>
+    public uint Difference ;
+    /// <summary>
+    /// Controls how the Difference parameter expands over time. Only one expansion can be set per rule.
+    /// </summary>
+    public LinearTeamSizeBalanceRuleExpansion LinearExpansion ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+}
+public class TeamTicketSizeSimilarityRule
+{
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+}
+public class StatisticsVisibilityToPlayers
+{
+    /// <summary>
+    /// Whether to allow players to view the current number of players in the matchmaking queue.
+    /// </summary>
+    public bool ShowNumberOfPlayersMatching ;
+    /// <summary>
+    /// Whether to allow players to view statistics representing the time it takes for tickets to find a match.
+    /// </summary>
+    public bool ShowTimeToMatch ;
+}
+public class StringEqualityRule
+{
+    /// <summary>
+    /// Description of the attribute used by this rule to match tickets.
+    /// </summary>
+    public QueueRuleAttribute Attribute ;
+    /// <summary>
+    /// Describes the behavior when an attribute is not specified in the ticket creation request or in the user's entity
+    /// profile.
+    /// </summary>
+    public string AttributeNotSpecifiedBehavior ;
+    /// <summary>
+    /// The default value assigned to tickets that are missing the attribute specified by AttributePath (assuming that
+    /// AttributeNotSpecifiedBehavior is false).
+    /// </summary>
+    public string DefaultAttributeValue ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. For StringEqualityRules, this is limited to
+    /// turning the rule off or on during different intervals.
+    /// </summary>
+    public StringEqualityRuleExpansion Expansion ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+    /// <summary>
+    /// The relative weight of this rule compared to others.
+    /// </summary>
+    public double Weight ;
+}
+public class StringEqualityRuleExpansion
+{
+    /// <summary>
+    /// List of bools specifying whether the rule is applied during this expansion.
+    /// </summary>
+    public List<bool> EnabledOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class TeamDifferenceRule
+{
+    /// <summary>
+    /// Description of the attribute used by this rule to match teams.
+    /// </summary>
+    public QueueRuleAttribute Attribute ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. Only one expansion can be set per rule. When this
+    /// is set, Difference is ignored.
+    /// </summary>
+    public CustomTeamDifferenceRuleExpansion CustomExpansion ;
+    /// <summary>
+    /// The default value assigned to tickets that are missing the attribute specified by AttributePath (assuming that
+    /// AttributeNotSpecifiedBehavior is false).
+    /// </summary>
+    public double DefaultAttributeValue ;
+    /// <summary>
+    /// The allowed difference between any two teams at the start of matchmaking.
+    /// </summary>
+    public double Difference ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. Only one expansion can be set per rule.
+    /// </summary>
+    public LinearTeamDifferenceRuleExpansion LinearExpansion ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+}
+public class SetIntersectionRule
+{
+    /// <summary>
+    /// Description of the attribute used by this rule to match tickets.
+    /// </summary>
+    public QueueRuleAttribute Attribute ;
+    /// <summary>
+    /// Describes the behavior when an attribute is not specified in the ticket creation request or in the user's entity
+    /// profile.
+    /// </summary>
+    public string AttributeNotSpecifiedBehavior ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. Only one expansion can be set per rule. When this
+    /// is set, MinIntersectionSize is ignored.
+    /// </summary>
+    public CustomSetIntersectionRuleExpansion CustomExpansion ;
+    /// <summary>
+    /// The default value assigned to tickets that are missing the attribute specified by AttributePath (assuming that
+    /// AttributeNotSpecifiedBehavior is UseDefault). Values must be unique.
+    /// </summary>
+    public List<string> DefaultAttributeValue ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. Only one expansion can be set per rule.
+    /// </summary>
+    public LinearSetIntersectionRuleExpansion LinearExpansion ;
+    /// <summary>
+    /// The minimum number of values that must match between sets.
+    /// </summary>
+    public uint MinIntersectionSize ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+    /// <summary>
+    /// The relative weight of this rule compared to others.
+    /// </summary>
+    public double Weight ;
+}
+public class MatchmakingQueueTeam
+{
+    /// <summary>
+    /// The maximum number of players required for the team.
+    /// </summary>
+    public uint MaxTeamSize ;
+    /// <summary>
+    /// The minimum number of players required for the team.
+    /// </summary>
+    public uint MinTeamSize ;
+    /// <summary>
+    /// A name to identify the team. This is case insensitive.
+    /// </summary>
+    public string Name ;
+}
+public class MatchTotalRule
+{
+    /// <summary>
+    /// Description of the attribute used by this rule to match tickets.
+    /// </summary>
+    public QueueRuleAttribute Attribute ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals.
+    /// </summary>
+    public MatchTotalRuleExpansion Expansion ;
+    /// <summary>
+    /// The maximum total value for a group. Must be >= Min.
+    /// </summary>
+    public double Max ;
+    /// <summary>
+    /// The minimum total value for a group. Must be >=2.
+    /// </summary>
+    public double Min ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+    /// <summary>
+    /// The relative weight of this rule compared to others.
+    /// </summary>
+    public double Weight ;
+}
+public class MatchTotalRuleExpansion
+{
+    /// <summary>
+    /// Manually specify the values to use for each expansion interval. When this is set, Max is ignored.
+    /// </summary>
+    public List<OverrideDouble> MaxOverrides ;
+    /// <summary>
+    /// Manually specify the values to use for each expansion interval. When this is set, Min is ignored.
+    /// </summary>
+    public List<OverrideDouble> MinOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public enum AttributeMergeFunction
+{
+    Min,
+    Max,
+    Average
+}
+public enum AttributeNotSpecifiedBehavior
+{
+    UseDefault,
+    MatchAny
+}
+public class QueueRuleAttribute
+{
+    /// <summary>
+    /// Specifies which attribute in a ticket to use.
+    /// </summary>
+    public string Path ;
+    /// <summary>
+    /// Specifies which source the attribute comes from.
+    /// </summary>
+    public string Source ;
+}
+public enum AttributeSource
+{
+    User,
+    PlayerEntity
+}
+public class DifferenceRule
+{
+    /// <summary>
+    /// Description of the attribute used by this rule to match tickets.
+    /// </summary>
+    public QueueRuleAttribute Attribute ;
+    /// <summary>
+    /// Describes the behavior when an attribute is not specified in the ticket creation request or in the user's entity
+    /// profile.
+    /// </summary>
+    public string AttributeNotSpecifiedBehavior ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. Only one expansion can be set per rule. When this
+    /// is set, Difference is ignored.
+    /// </summary>
+    public CustomDifferenceRuleExpansion CustomExpansion ;
+    /// <summary>
+    /// The default value assigned to tickets that are missing the attribute specified by AttributePath (assuming that
+    /// AttributeNotSpecifiedBehavior is false). Optional.
+    /// </summary>
+    public double? DefaultAttributeValue ;
+    /// <summary>
+    /// The allowed difference between any two tickets at the start of matchmaking.
+    /// </summary>
+    public double Difference ;
+    /// <summary>
+    /// Collection of fields relating to expanding this rule at set intervals. Only one expansion can be set per rule.
+    /// </summary>
+    public LinearDifferenceRuleExpansion LinearExpansion ;
+    /// <summary>
+    /// How values are treated when there are multiple players in a single ticket.
+    /// </summary>
+    public string MergeFunction ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+    /// <summary>
+    /// The relative weight of this rule compared to others.
+    /// </summary>
+    public double Weight ;
+}
+public class RegionSelectionRule
+{
+    /// <summary>
+    /// Controls how the Max Latency parameter expands over time. Only one expansion can be set per rule. When this is set,
+    /// MaxLatency is ignored.
+    /// </summary>
+    public CustomRegionSelectionRuleExpansion CustomExpansion ;
+    /// <summary>
+    /// Controls how the Max Latency parameter expands over time. Only one expansion can be set per rule.
+    /// </summary>
+    public LinearRegionSelectionRuleExpansion LinearExpansion ;
+    /// <summary>
+    /// Specifies the maximum latency that is allowed between the client and the selected server. The value is in milliseconds.
+    /// </summary>
+    public uint MaxLatency ;
+    /// <summary>
+    /// Friendly name chosen by developer.
+    /// </summary>
+    public string Name ;
+    /// <summary>
+    /// Specifies which attribute in a ticket to use.
+    /// </summary>
+    public string Path ;
+    /// <summary>
+    /// How many seconds before this rule is no longer enforced (but tickets that comply with this rule will still be
+    /// prioritized over those that don't). Leave blank if this rule is always enforced.
+    /// </summary>
+    public uint? SecondsUntilOptional ;
+    /// <summary>
+    /// The relative weight of this rule compared to others.
+    /// </summary>
+    public double Weight ;
+}
+public class LinearDifferenceRuleExpansion
+{
+    /// <summary>
+    /// This value gets added to Difference at every expansion interval.
+    /// </summary>
+    public double Delta ;
+    /// <summary>
+    /// Once the total difference reaches this value, expansion stops. Optional.
+    /// </summary>
+    public double? Limit ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class LinearRegionSelectionRuleExpansion
+{
+    /// <summary>
+    /// This value gets added to MaxLatency at every expansion interval.
+    /// </summary>
+    public uint Delta ;
+    /// <summary>
+    /// Once the max Latency reaches this value, expansion stops.
+    /// </summary>
+    public uint Limit ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class LinearSetIntersectionRuleExpansion
+{
+    /// <summary>
+    /// This value gets added to MinIntersectionSize at every expansion interval.
+    /// </summary>
+    public uint Delta ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class LinearTeamDifferenceRuleExpansion
+{
+    /// <summary>
+    /// This value gets added to Difference at every expansion interval.
+    /// </summary>
+    public double Delta ;
+    /// <summary>
+    /// Once the total difference reaches this value, expansion stops. Optional.
+    /// </summary>
+    public double? Limit ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class LinearTeamSizeBalanceRuleExpansion
+{
+    /// <summary>
+    /// This value gets added to Difference at every expansion interval.
+    /// </summary>
+    public uint Delta ;
+    /// <summary>
+    /// Once the total difference reaches this value, expansion stops. Optional.
+    /// </summary>
+    public uint? Limit ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class CustomRegionSelectionRuleExpansion
+{
+    /// <summary>
+    /// Manually specify the maximum latency to use for each expansion interval.
+    /// </summary>
+    public List<OverrideUnsignedInt> MaxLatencyOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class CustomSetIntersectionRuleExpansion
+{
+    /// <summary>
+    /// Manually specify the values to use for each expansion interval.
+    /// </summary>
+    public List<OverrideUnsignedInt> MinIntersectionSizeOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class CustomTeamDifferenceRuleExpansion
+{
+    /// <summary>
+    /// Manually specify the team difference value to use for each expansion interval.
+    /// </summary>
+    public List<OverrideDouble> DifferenceOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class OverrideDouble
+{
+    /// <summary>
+    /// The custom expansion value.
+    /// </summary>
+    public double Value ;
+}
+public class OverrideUnsignedInt
+{
+    /// <summary>
+    /// The custom expansion value.
+    /// </summary>
+    public uint Value ;
+}
+public class CustomDifferenceRuleExpansion
+{
+    /// <summary>
+    /// Manually specify the values to use for each expansion interval (this overrides Difference, Delta, and MaxDifference).
+    /// </summary>
+    public List<OverrideDouble> DifferenceOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class CustomTeamSizeBalanceRuleExpansion
+{
+    /// <summary>
+    /// Manually specify the team size difference to use for each expansion interval.
+    /// </summary>
+    public List<OverrideUnsignedInt> DifferenceOverrides ;
+    /// <summary>
+    /// How many seconds before this rule is expanded.
+    /// </summary>
+    public uint SecondsBetweenExpansions ;
+}
+public class GetMatchmakingQueueRequest
+{
+    /// <summary>
+    /// The Id of the matchmaking queue to retrieve.
+    /// </summary>
+    public string QueueName ;
+}
+public class GetMatchmakingQueueResult
+{
+    /// <summary>
+    /// The matchmaking queue config.
+    /// </summary>
+    public MatchmakingQueueConfig MatchmakingQueue ;
+}
+public class SetMatchmakingQueueRequest
+{
+    /// <summary>
+    /// The matchmaking queue config.
+    /// </summary>
+    public MatchmakingQueueConfig MatchmakingQueue ;
+}
+
+public enum RequestType {LoginRequest, StudiosRequest, GetMatchQueue, SetMatchQueue}
